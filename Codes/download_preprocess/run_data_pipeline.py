@@ -1,0 +1,133 @@
+# Author : Md Fahim Hasan
+# PhD Candidate
+# Colorado State university
+# Fahim.Hasan@colostate.edu
+
+import sys
+from pathlib import Path
+from download import download_all_gee_data
+from download_openET import download_openET_datasets
+
+# Project root directory (works regardless of cwd)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from Codes.download_preprocess.preprocess import run_all_preprocessing
+
+
+def run_download_pipeline(ee_project, skip_gee_data_download, skip_gee_openET_download,
+                          gee_data_list, openet_data_list, download_dir, year_list, month_range,
+                          grid_shape_for_2km_ensemble, grid_shape_for30m_irrmapper,
+                          grid_shape_for30m_lanid,  use_cpu_while_multidownloading=15):
+
+    # data download from GEE
+    if not skip_gee_data_download:
+        download_all_gee_data(ee_project=ee_project, data_list=gee_data_list, download_dir=download_dir, year_list=year_list, month_range=month_range,
+                              use_cpu_while_multidownloading=use_cpu_while_multidownloading)
+
+    # OpenET-derived data download from GEE
+    if not skip_gee_openET_download:
+        download_openET_datasets(ee_project,
+                                 openet_data_list, download_dir,
+                                 year_list, month_range,
+                                 grid_shape_for_2km_ensemble,
+                                 grid_shape_for30m_irrmapper,
+                                 grid_shape_for30m_lanid,
+                                 use_cpu_while_multidownloading=use_cpu_while_multidownloading)
+
+
+# The `if __name__ == "__main__":` guard is required when using Python's multiprocessing module
+# (used in make_training_tiles() class), especially on Windows and macOS. It ensures that the code inside this block
+# is only executed when the script is run directly. This prevents recursive imports and ensures that worker processes
+# are correctly spawned without re-running the entire script in each process.
+
+# Includes train_val_test split and standardization
+
+if __name__ == '__main__':
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # 1. Data download
+    # ------------------------------------------------------------------------------------------------------------------
+
+    # directories and variables
+    download_pipeline_config = {
+        'ee_project': 'ee-fahim',                     ########################################### update this to your GEE project name
+        'download_dir': PROJECT_ROOT / 'Data_main/rasters',
+        'gee_grid_shape_large': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_large.shp',
+        'gee_grid_shape_for30m_IrrMapper': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_IrrMapper.shp',
+        'gee_grid_shape_for30m_LANID': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
+
+        'years': [
+                   1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
+                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
+                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
+                   2018, 2019, 2020, 2021, 2022, 2023, 2024
+                ],
+        'month_range': (1, 12),
+
+        'gee_data_list': [
+                          'PRISM_Precip',
+                          'PRISM_Tmean',
+                          'Peff_usda_scs'
+                          ],
+
+        'openET_data_list': [
+                            #  'Irrig_crop_OpenET_IrrMapper',
+                            #  'Irrig_crop_OpenET_LANID',
+                             'Irrigation_Frac_IrrMapper',
+                             'Irrigation_Frac_LANID'
+                            ],
+
+        'skip_gee_data_download': True,                 ###########################################
+
+        'skip_gee_openET_download': False,               ###########################################
+
+        'use_cpu_while_multidownloading': 5             ###### fixed for Linux. Adjust it to 5 (for a 16 core cpu) in windows
+    }
+
+
+    run_download_pipeline(ee_project=download_pipeline_config['ee_project'],
+                          skip_gee_data_download=download_pipeline_config['skip_gee_data_download'],
+                          skip_gee_openET_download=download_pipeline_config['skip_gee_openET_download'],
+                          gee_data_list=download_pipeline_config['gee_data_list'],
+                          openet_data_list=download_pipeline_config['openET_data_list'],
+                          download_dir=download_pipeline_config['download_dir'],
+                          year_list=download_pipeline_config['years'],
+                          month_range=download_pipeline_config['month_range'],
+                          grid_shape_for_2km_ensemble=download_pipeline_config['gee_grid_shape_large'],
+                          grid_shape_for30m_irrmapper=download_pipeline_config['gee_grid_shape_for30m_IrrMapper'],
+                          grid_shape_for30m_lanid=download_pipeline_config['gee_grid_shape_for30m_LANID'],
+                          use_cpu_while_multidownloading=download_pipeline_config['use_cpu_while_multidownloading'])
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # 2. Data preprocessing
+    # ------------------------------------------------------------------------------------------------------------------
+
+    data_preprocessing_bools = {
+        'years': (1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
+                 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
+                 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
+                 2018, 2019, 2020, 2021, 2022, 2023, 
+                 # 2024       # will add year 2024 in the pipeline once OpenET data for 2024 - month 12 is available
+                ),
+        'skip_process_GrowSeason_data': True,           ###########################################
+        'skip_prism_precip_processing': True,           ###########################################
+        'skip_prism_tmean_processing': True,            ###########################################
+        'skip_irr_cropET_data_merge': True,             ###########################################
+        'skip_sum_irrigated_cropET': True,              ###########################################
+        'skip_sum_usda_scs_peff_growing_season': True,  ###########################################
+        'skip_sum_usda_scs_peff_water_year': True       ###########################################
+    }
+
+    run_all_preprocessing(
+        years_list=data_preprocessing_bools['years'],
+        skip_process_GrowSeason_data=data_preprocessing_bools['skip_process_GrowSeason_data'],
+        skip_prism_precip_processing=data_preprocessing_bools['skip_prism_precip_processing'],
+        skip_prism_tmean_processing=data_preprocessing_bools['skip_prism_tmean_processing'],
+        skip_irr_cropET_data_merge=data_preprocessing_bools['skip_irr_cropET_data_merge'],
+        skip_sum_irrigated_cropET=data_preprocessing_bools['skip_sum_irrigated_cropET'],
+        skip_sum_usda_scs_peff_growing_season=data_preprocessing_bools['skip_sum_usda_scs_peff_growing_season'],
+        skip_sum_usda_scs_peff_water_year=data_preprocessing_bools['skip_sum_usda_scs_peff_water_year'])
