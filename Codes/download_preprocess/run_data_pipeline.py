@@ -62,8 +62,8 @@ if __name__ == '__main__':
                    1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
                    1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
                    2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
-                   2018, 2019, 2020, 2021, 2022, 2023, 2024
+                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2018, 
+                   2019, 2020, 2021, 2022, 2023, 2024
                 ],
         'month_range': (1, 12),
 
@@ -82,11 +82,10 @@ if __name__ == '__main__':
 
         'skip_gee_data_download': True,                 ###########################################
 
-        'skip_gee_openET_download': False,               ###########################################
+        'skip_gee_openET_download': True,               ###########################################
 
         'use_cpu_while_multidownloading': 5             ###### fixed for Linux. Adjust it to 5 (for a 16 core cpu) in windows
     }
-
 
     run_download_pipeline(ee_project=download_pipeline_config['ee_project'],
                           skip_gee_data_download=download_pipeline_config['skip_gee_data_download'],
