@@ -1091,27 +1091,27 @@ def run_all_preprocessing(years_list,
     merge_GEE_data_patches_IrrMapper_LANID_extents(
         year_with_full_extent=years_list,
         year_with_partial_extent=None,
-        input_dir_irrmapper=PROJECT_ROOT + 'Data_main/rasters/Irrigation_Frac_IrrMapper',
-        input_dir_lanid=PROJECT_ROOT + 'Data_main/rasters/Irrigation_Frac_LANID',
-        merged_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+        input_dir_irrmapper=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_IrrMapper',
+        input_dir_lanid=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_LANID',
+        merged_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
         merge_keyword='Irrigated_Frac', monthly_data=False,
         ref_raster=WestUS_raster,
         skip_processing=skip_merge_irr_fraction_data)
 
     # process irrigated cropland data (1986-2024)
     classify_irrigated_cropland(years=years_list,
-                                irrigated_fraction_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
-                                irrigated_cropland_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland',
+                                irrigated_fraction_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+                                irrigated_cropland_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland',
                                 irr_fraction_threshold_others=0.13,  # 13%, based on westUS_pumping paper
                                 irr_fraction_threshold_BasinRange=0.01,  # 1%, base on WestUS_pumping paper
-                                basin_range_shp=PROJECT_ROOT + 'Data_main/shapefiles/Basin_Range_aquifer/Basin_RangeFill_extent.shp',
+                                basin_range_shp=PROJECT_ROOT / 'Data_main/shapefiles/Basin_Range_aquifer/Basin_RangeFill_extent.shp',
                                 skip_processing=skip_irr_cropland_classification)
     
     # calculate irrigated area (hectares) by combining irrigated fraction and cropland classification
     calculate_irrigated_area_raster(years=years_list, 
-                                    irrigated_fraction_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
-                                    irrigated_cropland_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland',
-                                    irrigated_area_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_area',
+                                    irrigated_fraction_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+                                    irrigated_cropland_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland',
+                                    irrigated_area_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_area',
                                     area_unit='hectares',
                                     skip_processing=skip_estimate_irrigated_area)
     
