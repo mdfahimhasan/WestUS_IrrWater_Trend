@@ -126,7 +126,7 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
 
 
     :param years_list: Tuple/list of years_list for which data will be processed.
-    :param input_cropET_monthly_dir: Directory file path of monthly datasets of the variable of interest.
+    :param var_monthly_dir: Directory file path of monthly datasets of the variable of interest.
     :param output_dir_water_yr: File path of directory to save summed variable for each water year.
     :param save_keyword: Keyword to use for summed cropET data saving.
     :param skip_processing: Set True to skip processing.
@@ -136,6 +136,8 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
     if not skip_processing:
         output_dir_water_yr = Path(output_dir_water_yr)
         output_dir_water_yr.mkdir(parents=True, exist_ok=True)
+        
+        var_monthly_dir = Path(var_monthly_dir)
 
         for yr in years_list:
             print(f'summing monthly cropET for water year {yr}...')
@@ -143,8 +145,17 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
             # summing rainfed/irrigated crop ET for water year (previous year's October to current year's september)
             et_data_prev_years = list(var_monthly_dir.glob(f'*{yr - 1}_1[0-2].*tif'))
             et_data_current_years = list(var_monthly_dir.glob(f'*{yr}_[1-9].*tif'))
-            et_water_yr_list = et_data_prev_years + et_data_current_years
-
+            
+            if not et_data_prev_years:
+                # for 1986 water year aggregation, this block will be executed because there is no data for 1985 
+                # (previous year) for some datasets. 
+                
+                logger.warning(f'No data for {yr-1} — computing water year {yr} from current year only.')
+                et_water_yr_list = et_data_current_years 
+                
+            else:
+                et_water_yr_list = et_data_prev_years + et_data_current_years
+                
             sum_rasters(raster_list=et_water_yr_list, raster_dir=None,
                         output_raster=output_dir_water_yr / f'{save_keyword}_{yr}.tif',
                         ref_raster=et_water_yr_list[0])
