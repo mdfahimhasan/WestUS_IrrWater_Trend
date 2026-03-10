@@ -612,6 +612,7 @@ def mean_rasters(raster_dir, output_raster, raster_list=None, search_by='*.tif',
         if raster == input_rasters[0]:
             arr = read_raster_arr_object(raster, get_file=False)
             sum_arr = arr
+            val += 1
         else:
             arr = read_raster_arr_object(raster, get_file=False)
             sum_arr += arr
