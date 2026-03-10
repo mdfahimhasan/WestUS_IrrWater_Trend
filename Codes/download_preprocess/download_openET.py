@@ -602,19 +602,17 @@ def download_Irr_frac_from_LANID_yearly(data_name, download_dir, year_list, grid
             aim_hpa_band = aim_hpa_band_dict[year]
 
             irr_aim_hpa = aim_hpa.select(aim_hpa_band).eq(1)
-
+            irr_aim_hpa_masked = irr_aim_hpa.selfMask()
+            
             # 2km projection taken for AIM-HPA
             projection2km_scale = irr_aim_hpa.projection().atScale(2200)
 
             # 30m Irrigation pixel count in each 2km pixel
-            irr_pixel_count = irr_aim_hpa.reduceResolution(reducer=ee.Reducer.count(),
+            irr_pixel_count = irr_aim_hpa_masked.reduceResolution(reducer=ee.Reducer.count(),
                                                            maxPixels=60000).reproject(crs=projection2km_scale)
 
-            # Unmasking() to keep the irrigated values to 1 and setting others as 0
-            irr_total = irr_pixel_count.unmask()
-
             # Total number of 30m pixels in each 2km pixel
-            total_pixel_count = irr_total.reduceResolution(reducer=ee.Reducer.count(),
+            total_pixel_count = irr_aim_hpa.unmask().reduceResolution(reducer=ee.Reducer.count(),
                                                            maxPixels=60000).reproject(crs=projection2km_scale)
 
             # counting fraction of irrigated lands in a pixel

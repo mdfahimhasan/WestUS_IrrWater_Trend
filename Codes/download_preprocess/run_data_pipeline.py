@@ -60,10 +60,11 @@ if __name__ == '__main__':
    
         'years': [
                    1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
-                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
-                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2018, 
-                   2019, 2020, 2021, 2022, 2023, 2024
+                   1994, 1995, 1996, 1997, 
+                #    1998, 1999, 2000, 2001,
+                #    2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                #    2010, 2011, 2012, 2013, 2014, 2015, 2016, 2018, 
+                #    2019, 2020, 2021, 2022, 2023, 2024
                 ],
         'month_range': (1, 12),
 
@@ -74,15 +75,15 @@ if __name__ == '__main__':
                           ],
 
         'openET_data_list': [
-                             'Irrig_crop_OpenET_IrrMapper',
-                             'Irrig_crop_OpenET_LANID',
-                             'Irrigation_Frac_IrrMapper',
+                            #  'Irrig_crop_OpenET_IrrMapper',
+                            #  'Irrig_crop_OpenET_LANID',
+                            #  'Irrigation_Frac_IrrMapper',
                              'Irrigation_Frac_LANID'
                             ],
 
         'skip_gee_data_download': True,                 ###########################################
 
-        'skip_gee_openET_download': True,               ###########################################
+        'skip_gee_openET_download': False,               ###########################################
 
         'use_cpu_while_multidownloading': 5             ###### fixed for Linux. Adjust it to 5 (for a 16 core cpu) in windows
     }
@@ -119,12 +120,12 @@ if __name__ == '__main__':
         'skip_irr_cropET_data_merge': True,             ###########################################
         'skip_sum_irrigated_cropET': True,              ###########################################
         'skip_sum_usda_scs_peff_growing_season': True,  ###########################################
-        'skip_sum_usda_scs_peff_water_year': False,       ###########################################
+        'skip_sum_usda_scs_peff_water_year': True,       ###########################################
         'skip_merge_irr_fraction_data': True,          ########################################### need rerun after <1997 download
         'skip_irr_cropland_classification': True,     ########################################### need rerun after <1997 download
         'skip_estimate_irrigated_area': True,          ########################################### need rerun after <1997 download
-        'skip_calculate_monthly_IWU': False,           ###########################################
-        'skip_calculate_growing_season_IWU': False     ###########################################
+        'skip_calculate_monthly_IWU': True,           ###########################################
+        'skip_calculate_growing_season_IWU': True     ###########################################
     }
 
     run_all_preprocessing(
@@ -146,3 +147,4 @@ if __name__ == '__main__':
 # before aggregating for the panel data.
 ######## Check all variables for this issue. Ask calude if it would be possible to have it check within the code.
 # bacially, I can check with irrigated cropland dataset, which has nan values in non-irrigated areas
+#### rething whether to use IWU=0 for panel data aggregation
