@@ -141,3 +141,8 @@ if __name__ == '__main__':
         skip_estimate_irrigated_area=data_preprocessing_bools['skip_estimate_irrigated_area'],
         skip_calculate_monthly_IWU=data_preprocessing_bools['skip_calculate_monthly_IWU'],
         skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'])
+    
+    ######## be very cautious. Monthly OpenET and GS OpenET would need to be processed by setting zeros to nan 
+# before aggregating for the panel data.
+######## Check all variables for this issue. Ask calude if it would be possible to have it check within the code.
+# bacially, I can check with irrigated cropland dataset, which has nan values in non-irrigated areas
