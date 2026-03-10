@@ -120,11 +120,11 @@ if __name__ == '__main__':
         'skip_sum_irrigated_cropET': True,              ###########################################
         'skip_sum_usda_scs_peff_growing_season': True,  ###########################################
         'skip_sum_usda_scs_peff_water_year': True,       ###########################################
-        'skip_merge_irr_fraction_data': True,          ###########################################
-        'skip_irr_cropland_classification': True,     ###########################################
-        'skip_estimate_irrigated_area': True,          ###########################################
-        'skip_calculate_monthly_IWU': True,           ###########################################
-        'skip_calculate_growing_season_IWU': True     ###########################################
+        'skip_merge_irr_fraction_data': False,          ###########################################
+        'skip_irr_cropland_classification': False,     ###########################################
+        'skip_estimate_irrigated_area': False,          ###########################################
+        'skip_calculate_monthly_IWU': False,           ###########################################
+        'skip_calculate_growing_season_IWU': False     ###########################################
     }
 
     run_all_preprocessing(
