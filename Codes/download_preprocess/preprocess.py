@@ -680,6 +680,7 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
 
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
+        iwu[valid & (iwu < 0)] = 0  # set negative IWU to zero as it is not physically meaningful (precip suffices crop water demand)
 
         return iwu
     
@@ -850,6 +851,7 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
 
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
+        iwu[valid & (iwu < 0)] = 0  # set negative IWU to zero as it is not physically meaningful (precip suffices crop water demand)
         
         return iwu
 
@@ -1060,12 +1062,10 @@ def run_all_preprocessing(years_list,
                                skip_processing=skip_sum_usda_scs_peff_growing_season)
     
     # Sum effective precipitation for water year
-    dynamic_gs_sum_of_variable(year_list=years_list,
-                               growing_season_dir=PROJECT_ROOT / 'Data_main/rasters/Growing_season',
-                               monthly_input_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/monthly',
-                               gs_output_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
-                               sum_keyword='effective_precip',
-                               skip_processing=skip_sum_usda_scs_peff_water_year)
+    sum_vars_water_yr(years_list=years_list, 
+                      var_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/monthly', 
+                      output_dir_water_yr=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
+                      save_keyword='effective_precip', skip_processing=skip_sum_usda_scs_peff_water_year)
 
     # process irrigated fraction data (1986-2024)
     merge_GEE_data_patches_IrrMapper_LANID_extents(
@@ -1111,3 +1111,7 @@ def run_all_preprocessing(years_list,
                                 skip_processing=skip_calculate_growing_season_IWU)
 
 
+######## be very cautious. Monthly OpenET and GS OpenET would need to be processed by setting zeros to nan 
+# before aggregating for the panel data.
+######## Check all variables for this issue. Ask calude if it would be possible to have it check within the code.
+# bacially, I can check with irrigated cropland dataset, which has nan values in non-irrigated areas
