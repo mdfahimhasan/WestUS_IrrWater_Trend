@@ -681,18 +681,6 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
 
-        # reality check: IWU < 0 is physically implausible
-        negative_mask = valid & (iwu < 0)
-        n_negative = int(np.sum(negative_mask))
-
-        if n_negative > 0:
-            logger.warning(
-                f'[{version_label}] year={year}, month={month:02d}: '
-                f'{n_negative} pixel(s) had IWU < 0 after Peff subtraction. '
-                f'Setting those pixels to 0.'
-            )
-            iwu[negative_mask] = 0.0
-
         return iwu
     
     # -------------------------------------------------------------------------
@@ -851,7 +839,7 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
     def compute_iwu(et_arr, peff_arr):
         """
         Compute IWU = ET - Peff where both inputs are valid (not nodata).
-        Flags and zeros out pixels where IWU < 0.
+  
         Returns IWU array.
         """
         et_f   = et_arr.astype(np.float32)
