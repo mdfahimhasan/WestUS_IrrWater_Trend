@@ -143,9 +143,12 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
             print(f'summing monthly cropET for water year {yr}...')
 
             # summing rainfed/irrigated crop ET for water year (previous year's October to current year's september)
-            et_data_prev_years = list(var_monthly_dir.glob(f'*{yr - 1}_1[0-2].*tif'))
-            et_data_current_years = list(var_monthly_dir.glob(f'*{yr}_[1-9].*tif'))
-            
+            et_data_prev_years = [f for f in var_monthly_dir.glob(f'*{yr - 1}*tif')
+                                if any(f'_{m}.' in f.name or f'_0{m}.' in f.name for m in [10, 11, 12])]
+
+            et_data_current_years = [f for f in var_monthly_dir.glob(f'*{yr}*tif')
+                                    if any(f'_{m}.' in f.name or f'_0{m}.' in f.name for m in range(1, 10))]
+
             if not et_data_prev_years:
                 # for 1986 water year aggregation, this block will be executed because there is no data for 1985 
                 # (previous year) for some datasets. 
