@@ -351,7 +351,7 @@ class GEE_download:
         # approximate width and height in meters (at mid-latitude)
         mid_lat = (min_lat + max_lat) / 2
         lat_meters_per_degree = 111320  # meters per degree latitude
-        lon_meters_per_degree = 111328 * np.cos(np.radians(mid_lat))
+        lon_meters_per_degree = 111320 * np.cos(np.radians(mid_lat))
 
         # Tile size in degrees
         tile_width_in_degree = (tile_pixel_per_side * scale_meters) / lon_meters_per_degree

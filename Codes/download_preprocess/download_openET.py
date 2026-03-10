@@ -848,7 +848,7 @@ def download_Irr_CropET_from_OpenET_IrrMapper_monthly(data_name, download_dir, y
                 # multiplying OpenET with Irrmapper irrigated data. This will set non-irrigated pixels' ET value to zero
                 cropET_from_OpenET = openET_img.multiply(irr_mask)
 
-                # summing crop ET (from openET) from 30m to 2km scale
+                # averaging crop ET (from openET) from 30m to 2km scale
                 cropET_from_OpenET = cropET_from_OpenET. \
                     reduceResolution(reducer=ee.Reducer.mean(), maxPixels=60000). \
                     reproject(crs=projection2km_scale)
@@ -1090,7 +1090,7 @@ def download_Irr_CropET_from_OpenET_LANID_monthly(data_name, download_dir, year_
                 # multiplying OpenET with LANID irrigated data.
                 cropET_from_OpenET = openET_img.multiply(irr_total)
 
-                # summing crop ET (from openET) from 30m to 2km scale
+                # averaging crop ET (from openET) from 30m to 2km scale
                 cropET_from_OpenET = cropET_from_OpenET. \
                     reduceResolution(reducer=ee.Reducer.mean(), maxPixels=60000). \
                     reproject(crs=projection2km_scale)

@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from Codes.utils.system_ops import makedirs
-from Codes.utils.raster_ops import read_raster_arr_object, sum_rasters, write_array_to_raster, \
+from Codes.utils.raster_ops import read_raster_arr_object, write_array_to_raster, sum_rasters, write_array_to_raster, \
     clip_resample_reproject_raster, shapefile_to_raster, mosaic_raster_list, rasterize_shape_to_match
 
 no_data_value = -9999
@@ -141,8 +141,8 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
             print(f'summing monthly cropET for water year {yr}...')
 
             # summing rainfed/irrigated crop ET for water year (previous year's October to current year's september)
-            et_data_prev_years = var_monthly_dir.glob(f'*{yr - 1}_1[0-2].*tif')
-            et_data_current_years = var_monthly_dir.glob(f'*{yr}_[1-9].*tif')
+            et_data_prev_years = list(var_monthly_dir.glob(f'*{yr - 1}_1[0-2].*tif'))
+            et_data_current_years = list(var_monthly_dir.glob(f'*{yr}_[1-9].*tif'))
             et_water_yr_list = et_data_prev_years + et_data_current_years
 
             sum_rasters(raster_list=et_water_yr_list, raster_dir=None,
@@ -181,7 +181,7 @@ def dynamic_gs_sum_of_variable(year_list, growing_season_dir, monthly_input_dir,
         month_pattern = re.compile(r'_([0-9]{1,2})\.tif')
 
         for year in year_list:
-            logging.info(f'Dynamically summing {sum_keyword} monthly datasets for growing season {year}...')
+            logger.info(f'Dynamically summing {sum_keyword} monthly datasets for growing season {year}...')
 
             # gathering and sorting the datasets by month (from 1 to 12)
             datasets = list(monthly_input_dir.glob(f'*{year}*.tif'))
@@ -228,8 +228,8 @@ def dynamic_gs_sum_of_variable(year_list, growing_season_dir, monthly_input_dir,
             ) as dst:
                 dst.write(summed_arr, 1)
 
-        logging.info('All dynamic summing completed')
-        logging.info('---------------------------------------------------------------')
+        logger.info('All dynamic summing completed')
+        logger.info('---------------------------------------------------------------')
 
 
 def dynamic_gs_mean_of_variable(year_list, growing_season_dir, monthly_input_dir, gs_output_dir,
@@ -302,8 +302,8 @@ def dynamic_gs_mean_of_variable(year_list, growing_season_dir, monthly_input_dir
             ) as dst:
                 dst.write(mean_arr, 1)
 
-        logging.info('All dynamic averaging completed')
-        logging.info('---------------------------------------------------------------')
+        logger.info('All dynamic averaging completed')
+        logger.info('---------------------------------------------------------------')
 
 
 def paste_and_reproject(src_raster_path, ref_raster_path, nodata):
@@ -554,7 +554,467 @@ def create_stateID_raster(westUS_shp, output_dir, skip_processing=False):
 
     else:
         pass
+    
+    
+def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly_dir,
+                          iwu_output_dir, skip_processing=False):
+    """
+    Calculate monthly Irrigation Water Use (IWU) by subtracting effective precipitation (Peff; USDA-SCS method)
+    from irrigated crop ET. Three versions are computed based on how many prior months of
+    Peff are averaged:
 
+        Version 1 — current month Peff only:
+            IWU_{m} = ET_{m} - Peff_{m}
+
+        Version 2 — average of current and previous month:
+            IWU_{m} = ET_{m} - mean(Peff_{m}, Peff_{m-1})
+
+        Version 3 — average of current and two prior months:
+            IWU_{m} = ET_{m} - mean(Peff_{m}, Peff_{m-1}, Peff_{m-2})
+
+    Multi-month Peff averaging accounts for the lag between when precipitation falls and when
+    it reduces irrigation demand. If prior-month data is unavailable (e.g., Jan of the first
+    year in years_list and no prior-year data exists on disk), the average is computed from
+    whatever months are available.
+
+    IWU is only computed where both ET and Peff are valid (not nodata). Pixels where
+    subtraction yields IWU < 0 are flagged (logged as warnings) and set to zero, as negative
+    IWU is physically implausible.
+
+    Output folder structure:
+        iwu_output_dir/
+        └── IWU_monthly/
+            ├── peff_v1_current/           (Version 1)
+            ├── peff_v2_current_prev1/     (Version 2)
+            └── peff_v3_current_prev2/     (Version 3)
+
+    :param years_list: List of years to process.
+    :param irrigated_cropET_monthly_dir: Directory containing monthly irrigated crop ET rasters.
+    :param peff_monthly_dir: Directory containing monthly Peff rasters.
+    :param iwu_output_dir: Root output directory. Subfolders are created automatically.
+    :param skip_processing: Set True to skip this step.
+
+    :return: None.
+    """
+    if skip_processing:
+        return
+
+    # -------------------------------------------------------------------------
+    # directory setup
+    # -------------------------------------------------------------------------
+    iwu_output_dir = Path(iwu_output_dir)
+    irrigated_cropET_monthly_dir = Path(irrigated_cropET_monthly_dir)
+    peff_monthly_dir = Path(peff_monthly_dir)
+
+    out_v1 = iwu_output_dir / 'IWU_monthly' / 'peff_v1_current'
+    out_v2 = iwu_output_dir / 'IWU_monthly' / 'peff_v2_current_prev1'
+    out_v3 = iwu_output_dir / 'IWU_monthly' / 'peff_v3_current_prev2'
+
+    for d in [out_v1, out_v2, out_v3]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------------------------------------------------------
+    # helper: step n months back from (year, month)
+    # -------------------------------------------------------------------------
+    def prev_month(year, month, n=1):
+        """Return (year, month) that is n months before the given date."""
+        m = month - n
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        return y, m
+
+    # -------------------------------------------------------------------------
+    # helper: load a Peff array; return None if file not found
+    # -------------------------------------------------------------------------
+    def load_peff(year, month):
+        matches = list(peff_monthly_dir.glob(f'*{year}_{month}.tif'))
+        if not matches:
+            logger.warning(f'Peff file not found for year={year}, month={month} — skipping contribution.')
+            return None
+        return read_raster_arr_object(matches[0], get_file=False)
+
+    # -------------------------------------------------------------------------
+    # helper: average a list of valid Peff arrays, respecting nodata
+    # -------------------------------------------------------------------------
+    def mean_peff(peff_arrays):
+        """
+        Average a list of Peff arrays. nodata (-9999) is excluded from the mean.
+        Pixels that are nodata in ALL contributing arrays remain -9999.
+        """
+        valid_stack = []
+        for arr in peff_arrays:
+            if arr is None:
+                continue
+            masked = np.where(arr == no_data_value, np.nan, arr.astype(np.float32))
+            valid_stack.append(masked)
+
+        if not valid_stack:
+            return None
+
+        stacked = np.stack(valid_stack, axis=0)  # shape: (n_months, H, W)
+        mean_arr = np.nanmean(stacked, axis=0)    # NaN where all inputs were nodata
+
+        # restore -9999 where all inputs were nodata
+        all_nan = np.all(np.isnan(stacked), axis=0)
+        mean_arr = np.where(all_nan, no_data_value, mean_arr)
+
+        return mean_arr.astype(np.float32)
+
+    # -------------------------------------------------------------------------
+    # helper: compute IWU = ET - peff_avg, with validity mask and neg-value check
+    # -------------------------------------------------------------------------
+    def compute_iwu(et_arr, peff_avg_arr, year, month, version_label):
+        """
+        Subtract peff_avg from ET where both are valid.
+        Flags and zeros out negative IWU pixels.
+        Returns IWU array.
+        """
+        et_f   = et_arr.astype(np.float32)
+        peff_f = peff_avg_arr.astype(np.float32)
+
+        # valid mask: both ET and Peff must be non-nodata
+        valid = (et_f != no_data_value) & (peff_f != no_data_value)
+
+        iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
+        iwu[valid] = et_f[valid] - peff_f[valid]
+
+        # reality check: IWU < 0 is physically implausible
+        negative_mask = valid & (iwu < 0)
+        n_negative = int(np.sum(negative_mask))
+
+        if n_negative > 0:
+            logger.warning(
+                f'[{version_label}] year={year}, month={month:02d}: '
+                f'{n_negative} pixel(s) had IWU < 0 after Peff subtraction. '
+                f'Setting those pixels to 0.'
+            )
+            iwu[negative_mask] = 0.0
+
+        return iwu
+    
+    # -------------------------------------------------------------------------
+    # main processing loop
+    # -------------------------------------------------------------------------
+    for year in years_list:
+        for month in range(1, 13):
+
+            logger.info(f'Computing monthly IWU for year={year}, month={month:02d}...')
+
+            # locate and load irrigated crop ET
+            et_matches = list(irrigated_cropET_monthly_dir.glob(f'*{year}_{month}.tif'))
+            if not et_matches:
+                logger.warning(f'Irrigated crop ET file not found for year={year}, month={month} — skipping.')
+                continue
+
+            et_arr, ras_file = read_raster_arr_object(et_matches[0], get_file=True)
+
+            # ------------------------------------------------------------------
+            # load Peff for current and up to 2 prior months
+            # ------------------------------------------------------------------
+            peff_m0 = load_peff(year, month)
+
+            y1, m1 = prev_month(year, month, n=1)
+            peff_m1 = load_peff(y1, m1)
+
+            y2, m2 = prev_month(year, month, n=2)
+            peff_m2 = load_peff(y2, m2)
+
+            # ------------------------------------------------------------------
+            # Version 1: current month only
+            # ------------------------------------------------------------------
+            peff_v1 = mean_peff([peff_m0])
+            if peff_v1 is not None:
+                iwu_v1 = compute_iwu(et_arr, peff_v1, year, month, version_label='v1_current')
+                out_path_v1 = out_v1 / f'IWU_{year}_{month}.tif'
+                write_array_to_raster(iwu_v1, ras_file, ras_file.transform, out_path_v1, 
+                                      nodata=no_data_value)
+
+            else:
+                logger.warning(f'Skipping v1 for year={year}, month={month} — no valid Peff.')
+
+            # ------------------------------------------------------------------
+            # Version 2: current + previous month
+            # ------------------------------------------------------------------
+            peff_v2 = mean_peff([peff_m0, peff_m1])
+            if peff_v2 is not None:
+                iwu_v2 = compute_iwu(et_arr, peff_v2, year, month, version_label='v2_current_prev1')
+                out_path_v2 = out_v2 / f'IWU_{year}_{month}.tif'
+                write_array_to_raster(iwu_v2, ras_file, ras_file.transform, out_path_v2, 
+                                      nodata=no_data_value)
+                
+            else:
+                logger.warning(f'Skipping v2 for year={year}, month={month} — no valid Peff.')
+
+            # ------------------------------------------------------------------
+            # Version 3: current + 2 prior months
+            # ------------------------------------------------------------------
+            peff_v3 = mean_peff([peff_m0, peff_m1, peff_m2])
+            if peff_v3 is not None:
+                iwu_v3 = compute_iwu(et_arr, peff_v3, year, month, version_label='v3_current_prev2')
+                out_path_v3 = out_v3 / f'IWU_{year}_{month}.tif'
+                write_array_to_raster(iwu_v3, ras_file, ras_file.transform, out_path_v3, 
+                                      nodata=no_data_value)
+
+            else:
+                logger.warning(f'Skipping v3 for year={year}, month={month} — no valid Peff.')
+
+    logger.info('Monthly IWU calculation completed for all versions.')
+    logger.info('---------------------------------------------------------------')
+
+
+def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir,
+                                peff_water_year_dir, iwu_output_dir, 
+                                skip_processing=False):
+    """
+    Estimate growing season Irrigation Water Use (IWU) by subtracting effective
+    precipitation (Peff, USDA-SCS method) from growing season irrigated crop ET. 
+    Two versions are computed based on which Peff accumulation period is used:
+
+        Version 1 — growing season Peff:
+            IWU = ET_gs - Peff_gs
+            Uses Peff accumulated over the dynamic growing season (same window as ET).
+            More physically consistent pairing of ET and Peff.
+
+        Version 2 — water year Peff:
+            IWU = ET_gs - Peff_wy
+            Uses Peff accumulated over the full water year (Oct–Sep).
+            Accounts for carry-over soil moisture from outside the growing season.
+
+    IWU is only computed where both ET and Peff are valid (not nodata = -9999).
+    Pixels where subtraction yields IWU < 0 are flagged and set to zero, as
+    negative IWU is physically implausible.
+
+    Output folder structure:
+        iwu_output_dir/
+        └── IWU_gs/
+            ├── IWU_peff_gs/    (Version 1: growing season Peff)
+            └── IWU_peff_wy/    (Version 2: water year Peff)
+
+    :param years_list: List/tuple of years to process.
+    :param irrigated_cropET_gs_dir: Directory of growing season irrigated crop ET rasters.
+    :param peff_gs_dir: Directory of growing season Peff rasters.
+    :param peff_water_year_dir: Directory of water year Peff rasters.
+    :param iwu_output_dir: Root output directory. Subfolders are created automatically.
+    :param skip_processing: Set True to skip this step.
+
+    :return: None.
+    """
+    if skip_processing:
+        return
+
+    # -------------------------------------------------------------------------
+    # directory setup
+    # -------------------------------------------------------------------------
+    iwu_output_dir          = Path(iwu_output_dir)
+    irrigated_cropET_gs_dir = Path(irrigated_cropET_gs_dir)
+    peff_gs_dir             = Path(peff_gs_dir)
+    peff_water_year_dir     = Path(peff_water_year_dir)
+
+    iwu_out_dir_v1 = iwu_output_dir / 'IWU_gs' / 'IWU_peff_gs'
+    iwu_out_dir_v2 = iwu_output_dir / 'IWU_gs' / 'IWU_peff_wy'
+
+    for d in [iwu_out_dir_v1, iwu_out_dir_v2]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------------------------------------------------------
+    # helper: load ET, Peff_gs, and Peff_wy arrays for a given year
+    # -------------------------------------------------------------------------
+    def load_data(year):
+        """
+        Locate and load growing season ET, Peff_gs, and Peff_wy rasters for a year.
+        Returns (et_arr, peff_gs_arr, peff_wy_arr, ras_file), or
+        (None, None, None, None) if any input file is missing.
+        """
+        et_matches      = list(irrigated_cropET_gs_dir.glob(f'*{year}*.tif'))
+        peff_gs_matches = list(peff_gs_dir.glob(f'*{year}*.tif'))
+        peff_wy_matches = list(peff_water_year_dir.glob(f'*{year}*.tif'))
+
+        if not et_matches or not peff_gs_matches or not peff_wy_matches:
+            logger.warning(f'Missing data for year={year} — skipping IWU estimation.')
+            return None, None, None, None
+
+        et_arr, ras_file = read_raster_arr_object(et_matches[0], get_file=True)
+        peff_gs_arr      = read_raster_arr_object(peff_gs_matches[0], get_file=False)
+        peff_wy_arr      = read_raster_arr_object(peff_wy_matches[0], get_file=False)
+
+        return et_arr, peff_gs_arr, peff_wy_arr, ras_file
+
+    # -------------------------------------------------------------------------
+    # helper: subtract Peff from ET with validity mask and negative value check
+    # -------------------------------------------------------------------------
+    def compute_iwu(et_arr, peff_arr, year, version_label):
+        """
+        Compute IWU = ET - Peff where both inputs are valid (not nodata).
+        Flags and zeros out pixels where IWU < 0.
+        Returns IWU array.
+        """
+        et_f   = et_arr.astype(np.float32)
+        peff_f = peff_arr.astype(np.float32)
+
+        # valid mask: both ET and Peff must be non-nodata
+        valid = (et_f != no_data_value) & (peff_f != no_data_value)
+
+        iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
+        iwu[valid] = et_f[valid] - peff_f[valid]
+
+        # reality check: negative IWU is physically implausible
+        negative_mask = valid & (iwu < 0)
+        n_negative    = int(np.sum(negative_mask))
+
+        if n_negative > 0:
+            logger.warning(
+                f'[{version_label}] year={year}: '
+                f'{n_negative} pixel(s) had IWU < 0 after Peff subtraction. '
+                f'Setting those pixels to 0.'
+            )
+            iwu[negative_mask] = 0.0
+
+        return iwu
+
+    # -------------------------------------------------------------------------
+    # main processing loop
+    # -------------------------------------------------------------------------
+    for year in years_list:
+        logger.info(f'Estimating growing season IWU for year={year}...')
+
+        et_arr, peff_gs_arr, peff_wy_arr, ras_file = load_data(year)
+
+        # skip year if any input file was missing
+        if et_arr is None:
+            continue
+
+        # Version 1: IWU = growing season ET - growing season Peff
+        iwu_arr_v1 = compute_iwu(et_arr, peff_gs_arr, year, version_label='v1_peff_gs')
+        write_array_to_raster(iwu_arr_v1, ras_file, ras_file.transform,
+                              iwu_out_dir_v1 / f'IWU_{year}.tif',
+                              nodata=no_data_value)
+
+        # Version 2: IWU = growing season ET - water year Peff
+        iwu_arr_v2 = compute_iwu(et_arr, peff_wy_arr, year, version_label='v2_peff_wy')
+        write_array_to_raster(iwu_arr_v2, ras_file, ras_file.transform,
+                              iwu_out_dir_v2 / f'IWU_{year}.tif',
+                              nodata=no_data_value)
+
+    logger.info('Growing season IWU calculation completed for all versions.')
+    logger.info('---------------------------------------------------------------')
+
+
+def calculate_irrigated_area_raster(years, irrigated_fraction_dir, irrigated_cropland_dir,
+                                    irrigated_area_output_dir, area_unit='hectares',
+                                    skip_processing=False):
+    """
+    Calculate irrigated area (hectares or acres) per pixel by combining irrigated
+    fraction data with irrigated cropland classification.
+
+    The irrigated area at each pixel is computed as:
+
+        irrigated_area = irr_fraction * pixel_area
+
+    Pixel area is derived from the raster's geographic CRS (lat/lon degrees) using
+    the mid-latitude of the raster extent for representative metre-per-degree conversion.
+    The irrigated cropland classification acts as a binary mask — area is only computed
+    for pixels classified as irrigated cropland (value = 1).
+
+    Output filename pattern: Irrigated_area_{area_unit}_{year}.tif
+
+    :param years: List/tuple of years to process.
+    :param irrigated_fraction_dir: Directory of irrigated fraction rasters (values 0-1).
+    :param irrigated_cropland_dir: Directory of irrigated cropland classification rasters
+                                    (binary: 1 = irrigated, -9999 = nodata/not irrigated).
+    :param irrigated_area_output_dir: Output directory for irrigated area rasters.
+    :param area_unit: Unit for output area values. Either 'hectares' (default) or 'acres'.
+    :param skip_processing: Set True to skip this step.
+
+    :return: None.
+    """
+    if skip_processing:
+        return
+
+    # -------------------------------------------------------------------------
+    # directory setup
+    # -------------------------------------------------------------------------
+    irrigated_fraction_dir    = Path(irrigated_fraction_dir)
+    irrigated_cropland_dir    = Path(irrigated_cropland_dir)
+    irrigated_area_output_dir = Path(irrigated_area_output_dir)
+    irrigated_area_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------------------------------------------------------
+    # unit conversion factors from m²
+    # -------------------------------------------------------------------------
+    conversion = {'hectares': 1 / 10_000,      # 1 ha = 10,000 m²
+                  'acres':    1 / 4_046.856}    # 1 acre = 4,046.856 m²
+
+    if area_unit not in conversion:
+        raise ValueError(f"area_unit must be 'hectares' or 'acres', got '{area_unit}'.")
+
+    # -------------------------------------------------------------------------
+    # compute pixel area from reference raster
+    # raster is in geographic CRS (degrees), so pixel area varies with latitude
+    # use mid-latitude of the raster extent as a representative value
+    # -------------------------------------------------------------------------
+    with rio.open(next(irrigated_cropland_dir.glob('*.tif'))) as src:
+        transform = src.transform
+        bounds    = src.bounds   # (left, bottom, right, top)
+
+    min_lat = bounds.bottom
+    max_lat = bounds.top
+    mid_lat = (min_lat + max_lat) / 2
+
+    # metres per degree at mid-latitude
+    lat_meters_per_degree = 111_320                                         # constant
+    lon_meters_per_degree = 111_320 * np.cos(np.radians(mid_lat))          # varies with latitude
+
+    # pixel dimensions in metres
+    # a - pixel width in degrees (transform.a)
+    # e - pixel height in degrees (transform.e; negative value)
+    pixel_height_m = abs(transform.e) * lat_meters_per_degree
+    pixel_width_m  = abs(transform.a) * lon_meters_per_degree
+    pixel_area_m2  = pixel_height_m * pixel_width_m
+
+    # convert to target unit
+    pixel_area = pixel_area_m2 * conversion[area_unit]
+
+    logger.info(f'Mid-latitude of raster extent: {mid_lat:.2f}°N')
+    logger.info(f'Pixel area: {pixel_area_m2:.1f} m²  →  {pixel_area:.4f} {area_unit} per pixel')
+
+    # -------------------------------------------------------------------------
+    # main processing loop
+    # -------------------------------------------------------------------------
+    for year in years:
+        logger.info(f'Calculating irrigated area ({area_unit}) for year={year}...')
+
+        # locate input files
+        frac_matches  = list(irrigated_fraction_dir.glob(f'*{year}*.tif'))
+        class_matches = list(irrigated_cropland_dir.glob(f'*{year}*.tif'))
+
+        if not frac_matches or not class_matches:
+            logger.warning(f'Missing data for year={year} — skipping.')
+            continue
+
+        # load irrigated fraction (0–1) and cropland classification (1 or nodata)
+        irr_frac_arr, ras_file = read_raster_arr_object(frac_matches[0], get_file=True)
+        irr_class_arr          = read_raster_arr_object(class_matches[0], get_file=False)
+
+        irr_frac_arr  = irr_frac_arr.astype(np.float32)
+        irr_class_arr = irr_class_arr.astype(np.float32)
+
+        # valid mask: pixel must be classified as irrigated cropland AND have valid fraction
+        valid = (irr_class_arr == 1) & (irr_frac_arr != no_data_value) & (irr_frac_arr > 0) & (irr_frac_arr <= 1)
+
+        # irrigated area = fraction * pixel area, only over classified irrigated pixels
+        irrigated_area_arr = np.full_like(irr_frac_arr, no_data_value, dtype=np.float32)
+        irrigated_area_arr[valid] = irr_frac_arr[valid] * pixel_area
+
+        # save output
+        output_path = irrigated_area_output_dir / f'Irrigated_area_{area_unit}_{year}.tif'
+        write_array_to_raster(irrigated_area_arr, ras_file, ras_file.transform,
+                              output_path, nodata=no_data_value)
+
+    logger.info(f'Irrigated area ({area_unit}) calculation completed.')
+    logger.info('---------------------------------------------------------------')
+    
 
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
@@ -563,7 +1023,12 @@ def run_all_preprocessing(years_list,
                           skip_irr_cropET_data_merge=False,
                           skip_sum_irrigated_cropET=False,
                           skip_sum_usda_scs_peff_growing_season=False,
-                          skip_sum_usda_scs_peff_water_year=False):
+                          skip_sum_usda_scs_peff_water_year=False,
+                          skip_merge_irr_fraction_data=False,
+                          skip_irr_cropland_classification=False,
+                          skip_estimate_irrigated_area=False,
+                          skip_calculate_monthly_IWU=False,
+                          skip_calculate_growing_season_IWU=False):
     """
     Run all data pre-processing steps.
     """
@@ -622,27 +1087,47 @@ def run_all_preprocessing(years_list,
                                sum_keyword='effective_precip',
                                skip_processing=skip_sum_usda_scs_peff_water_year)
 
-    # # process irrigated fraction data (2021-2023)
-    # # processed in the Peff paper
-    # merge_GEE_data_patches_IrrMapper_LANID_extents(
-    #     year_with_full_extent=(1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007,
-    #                            2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016,
-    #                            2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024),
-    #     year_with_partial_extent=None,
-    #     input_dir_irrmapper='../../Data_main/Rasters/Irrigation_Frac_IrrMapper',
-    #     input_dir_lanid='../../Data_main/Rasters/Irrigation_Frac_LANID',
-    #     merged_output_dir='../../Data_main/Rasters/Irrigated_cropland/Irrigated_Frac',
-    #     merge_keyword='Irrigated_Frac', monthly_data=False,
-    #     ref_raster=WestUS_raster,
-    #     skip_processing=skip_irr_frac_data_processing)
+    # process irrigated fraction data (1986-2024)
+    merge_GEE_data_patches_IrrMapper_LANID_extents(
+        year_with_full_extent=years_list,
+        year_with_partial_extent=None,
+        input_dir_irrmapper=PROJECT_ROOT + 'Data_main/rasters/Irrigation_Frac_IrrMapper',
+        input_dir_lanid=PROJECT_ROOT + 'Data_main/rasters/Irrigation_Frac_LANID',
+        merged_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+        merge_keyword='Irrigated_Frac', monthly_data=False,
+        ref_raster=WestUS_raster,
+        skip_processing=skip_merge_irr_fraction_data)
 
-    # # process irrigated cropland data (2000-2023)
-    # # 2000-2020 data was processed int he Peff paper
-    # classify_irrigated_cropland(years=list(range(2000, 2024)),
-    #                             irrigated_fraction_dir='../../Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
-    #                             irrigated_cropland_output_dir='../../Data_main/rasters/Irrigated_cropland',
-    #                             irr_fraction_threshold_others=0.13,  # 13%
-    #                             irr_fraction_threshold_BasinRange=0.01,  # 1%
-    #                             basin_range_shp='../../Data_main/shapefiles/Basin_Range_aquifer/Basin_RangeFill_extent.shp',
-    #                             skip_processing=skip_irr_cropland_classification)
+    # process irrigated cropland data (1986-2024)
+    classify_irrigated_cropland(years=years_list,
+                                irrigated_fraction_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+                                irrigated_cropland_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland',
+                                irr_fraction_threshold_others=0.13,  # 13%, based on westUS_pumping paper
+                                irr_fraction_threshold_BasinRange=0.01,  # 1%, base on WestUS_pumping paper
+                                basin_range_shp=PROJECT_ROOT + 'Data_main/shapefiles/Basin_Range_aquifer/Basin_RangeFill_extent.shp',
+                                skip_processing=skip_irr_cropland_classification)
+    
+    # calculate irrigated area (hectares) by combining irrigated fraction and cropland classification
+    calculate_irrigated_area_raster(years=years_list, 
+                                    irrigated_fraction_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+                                    irrigated_cropland_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_cropland',
+                                    irrigated_area_output_dir=PROJECT_ROOT + 'Data_main/rasters/Irrigated_area',
+                                    area_unit='hectares',
+                                    skip_processing=skip_estimate_irrigated_area)
+    
+    # calculate monthly IWU
+    calculate_monthly_IWU(years_list=years_list,
+                          irrigated_cropET_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',
+                          peff_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/monthly',
+                          iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
+                          skip_processing=skip_calculate_monthly_IWU)
+    
+    # calculate growing season IWU
+    estimate_growing_season_IWU(years_list=years_list, 
+                                irrigated_cropET_gs_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/growing_season',
+                                peff_gs_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/growing_season',
+                                peff_water_year_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
+                                iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
+                                skip_processing=skip_calculate_growing_season_IWU)
+
 
