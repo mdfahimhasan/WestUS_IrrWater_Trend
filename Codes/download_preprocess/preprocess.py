@@ -629,7 +629,7 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
     # helper: load a Peff array; return None if file not found
     # -------------------------------------------------------------------------
     def load_peff(year, month):
-        matches = list(peff_monthly_dir.glob(f'*{year}_{month}.tif'))
+        matches = list(peff_monthly_dir.glob(f'*{year}_{month:02d}.tif'))
         if not matches:
             logger.warning(f'Peff file not found for year={year}, month={month} — skipping contribution.')
             return None
