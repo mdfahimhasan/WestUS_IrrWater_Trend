@@ -115,11 +115,11 @@ def get_openet_gee_dict(data_name, ee_project='ee-fahim'):
         'OpenET_ensemble': datetime(2024, 12, 1),
         'OpenET_provisional': datetime(1999, 10, 1),  # 1984 only covers pacific-northwest
         'USDA_CDL': datetime(2023, 1, 1),
-        'IrrMapper': datetime(2024, 1, 1),
+        'IrrMapper': datetime(2025, 1, 1),
         'LANID_1997_2020': None,
         'LANID_2021_2025': None,
         'AIM-HPA': None,
-        'Irrigation_Frac_IrrMapper': datetime(2024, 1, 1),
+        'Irrigation_Frac_IrrMapper': datetime(2025, 1, 1),
         'Irrigation_Frac_LANID': None
     }
 
@@ -143,7 +143,7 @@ def get_openet_gee_dict(data_name, ee_project='ee-fahim'):
         'LANID_1997_2020': None,
         'LANID_2021_2025': None,
         'AIM-HPA': None,
-        'Irrigation_Frac_IrrMapper': datetime(2024, 1, 1),
+        'Irrigation_Frac_IrrMapper': datetime(2025, 1, 1),
         'Irrigation_Frac_LANID': None
     }
 
@@ -509,6 +509,7 @@ def download_Irr_frac_from_IrrMapper_yearly(data_name, download_dir, year_list, 
                     local_file_paths_list = []
 
         else:
+            logger.warning(f'Data for year {year} is out of range. Skipping query')
             pass
 
 
