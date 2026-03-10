@@ -675,7 +675,7 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
         peff_f = peff_avg_arr.astype(np.float32)
 
         # valid mask: both ET and Peff must be non-nodata
-        valid = (et_f != no_data_value) & (peff_f != no_data_value)
+        valid = (et_f != no_data_value) & (et_f > 0) & (peff_f != no_data_value)
 
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
@@ -854,7 +854,7 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
         peff_f = peff_arr.astype(np.float32)
 
         # valid mask: both ET and Peff must be non-nodata
-        valid = (et_f != no_data_value) & (peff_f != no_data_value)
+        valid = (et_f != no_data_value) & (et_f > 0) & (peff_f != no_data_value)
 
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
