@@ -140,7 +140,7 @@ def sum_vars_water_yr(years_list, var_monthly_dir, output_dir_water_yr,
         var_monthly_dir = Path(var_monthly_dir)
 
         for yr in years_list:
-            print(f'summing monthly cropET for water year {yr}...')
+            logger.info(f'summing monthly {save_keyword} dataset for water year {yr}...')
 
             # summing rainfed/irrigated crop ET for water year (previous year's October to current year's september)
             et_data_prev_years = [f for f in var_monthly_dir.glob(f'*{yr - 1}*tif')
