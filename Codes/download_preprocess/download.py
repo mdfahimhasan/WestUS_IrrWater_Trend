@@ -1171,6 +1171,7 @@ def download_USDA_SCS_Peff_pycropwat(years_list, output_dir, scale_meters, ee_pr
     monthly_raw_output_dir.mkdir(parents=True, exist_ok=True)
 
     # extending the given year list to include the preceding year for the first year in the list. This is required for calculating Peff for the first year in the list.
+    # we still can't download 1985 data as we used OpenET as ET, which has Western US-wide availability from 1986
     if len(years_list) > 0:
         first_year = years_list[0]
         preceding_year = first_year - 1
