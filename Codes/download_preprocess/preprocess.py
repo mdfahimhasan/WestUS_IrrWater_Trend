@@ -572,14 +572,15 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
         Version 3 — average of current and two prior months:
             IWU_{m} = ET_{m} - mean(Peff_{m}, Peff_{m-1}, Peff_{m-2})
 
-    Multi-month Peff averaging accounts for the lag between when precipitation falls and when
-    it reduces irrigation demand. If prior-month data is unavailable (e.g., Jan of the first
-    year in years_list and no prior-year data exists on disk), the average is computed from
-    whatever months are available.
-
-    IWU is only computed where both ET and Peff are valid (not nodata). Pixels where
-    subtraction yields IWU < 0 are flagged (logged as warnings) and set to zero, as negative
-    IWU is physically implausible.
+    
+    Note:
+    -------
+    - IWU is only computed where both ET and Peff are valid (not nodata) and ET > 0.
+    - IWU is only estiamted for April (4) to October (10) as these are generally the growing season months in the Western US.
+    - Multi-month Peff averaging (v2 and v3) accounts for the lag between when precipitation falls and when
+        it reduces irrigation demand. If prior-month data is unavailable (e.g., Jan of the first
+        year in years_list and no prior-year data exists on disk), the average is computed from
+        whatever months are available.
 
     Output folder structure:
         iwu_output_dir/
@@ -698,7 +699,9 @@ def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly
     # main processing loop
     # -------------------------------------------------------------------------
     for year in years_list:
-        for month in range(1, 13):
+        
+        # only compute for April (4) to October (10) - in general growing season in Western US
+        for month in range(4, 11): 
 
             logger.info(f'Computing monthly IWU for year={year}, month={month:02d}...')
 
@@ -782,9 +785,10 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
             Uses Peff accumulated over the full water year (Oct–Sep).
             Accounts for carry-over soil moisture from outside the growing season.
 
-    IWU is only computed where both ET and Peff are valid (not nodata = -9999).
-    Pixels where subtraction yields IWU < 0 are flagged and set to zero, as
-    negative IWU is physically implausible.
+    Note:
+    -------
+    - IWU is only computed where both ET and Peff are valid (not nodata) and ET > 0.
+
 
     Output folder structure:
         iwu_output_dir/
@@ -844,7 +848,7 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
     # -------------------------------------------------------------------------
     # helper: subtract Peff from ET with validity mask and negative value check
     # -------------------------------------------------------------------------
-    def compute_iwu(et_arr, peff_arr, year, version_label):
+    def compute_iwu(et_arr, peff_arr):
         """
         Compute IWU = ET - Peff where both inputs are valid (not nodata).
         Flags and zeros out pixels where IWU < 0.
@@ -858,19 +862,7 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
 
         iwu = np.full_like(et_f, no_data_value, dtype=np.float32)
         iwu[valid] = et_f[valid] - peff_f[valid]
-
-        # reality check: negative IWU is physically implausible
-        negative_mask = valid & (iwu < 0)
-        n_negative    = int(np.sum(negative_mask))
-
-        if n_negative > 0:
-            logger.warning(
-                f'[{version_label}] year={year}: '
-                f'{n_negative} pixel(s) had IWU < 0 after Peff subtraction. '
-                f'Setting those pixels to 0.'
-            )
-            iwu[negative_mask] = 0.0
-
+        
         return iwu
 
     # -------------------------------------------------------------------------
@@ -886,13 +878,13 @@ def estimate_growing_season_IWU(years_list, irrigated_cropET_gs_dir, peff_gs_dir
             continue
 
         # Version 1: IWU = growing season ET - growing season Peff
-        iwu_arr_v1 = compute_iwu(et_arr, peff_gs_arr, year, version_label='v1_peff_gs')
+        iwu_arr_v1 = compute_iwu(et_arr, peff_gs_arr)
         write_array_to_raster(iwu_arr_v1, ras_file, ras_file.transform,
                               iwu_out_dir_v1 / f'IWU_{year}.tif',
                               nodata=no_data_value)
 
         # Version 2: IWU = growing season ET - water year Peff
-        iwu_arr_v2 = compute_iwu(et_arr, peff_wy_arr, year, version_label='v2_peff_wy')
+        iwu_arr_v2 = compute_iwu(et_arr, peff_wy_arr)
         write_array_to_raster(iwu_arr_v2, ras_file, ras_file.transform,
                               iwu_out_dir_v2 / f'IWU_{year}.tif',
                               nodata=no_data_value)
