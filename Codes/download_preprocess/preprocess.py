@@ -1260,3 +1260,4 @@ def run_all_preprocessing(years_list,
                                 output_dir=PROJECT_ROOT / 'Data_main/rasters/Spatial_units',
                                 ref_raster=WestUS_raster,
                                 skip_processing=skip_spatial_unit_rasters_creation)
+    
