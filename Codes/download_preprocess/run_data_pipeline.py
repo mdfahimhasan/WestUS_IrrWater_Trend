@@ -57,12 +57,11 @@ if __name__ == '__main__':
         'gee_grid_shape_large': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_large.shp',
         'gee_grid_shape_for30m_IrrMapper': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_IrrMapper.shp',
         'gee_grid_shape_for30m_LANID': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
-   
         'years': [
                    1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
                    1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
                    2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 
+                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
                    2018, 2019, 2020, 2021, 2022, 2023, 2024
                 ],
         'month_range': (1, 12),
@@ -110,7 +109,7 @@ if __name__ == '__main__':
                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
-                  2018, 2019, 2020, 2021, 2022, 2023, 
+                  2018, 2019, 2020, 2021, 2022, 2023,
                   # 2024       # will add year 2024 in the pipeline once OpenET data for 2024 - month 12 is available
                 ],
         'skip_process_GrowSeason_data': True,           ###########################################
@@ -119,13 +118,13 @@ if __name__ == '__main__':
         'skip_irr_cropET_data_merge': True,             ###########################################
         'skip_sum_irrigated_cropET': True,              ###########################################
         'skip_sum_usda_scs_peff_growing_season': True,  ###########################################
-        'skip_sum_usda_scs_peff_water_year': True,       ###########################################
-        'skip_merge_irr_fraction_data': True,          ###########################################
-        'skip_irr_cropland_classification': True,     ###########################################
-        'skip_estimate_irrigated_area': True,          ###########################################
-        'skip_calculate_monthly_IWU': True,           ###########################################
-        'skip_calculate_growing_season_IWU': True,     ###########################################
-        'skip_spatial_unit_rasters_creation': True     ###########################################
+        'skip_sum_usda_scs_peff_water_year': True,      ###########################################
+        'skip_merge_irr_fraction_data': True,           ###########################################
+        'skip_irr_cropland_classification': True,       ###########################################
+        'skip_estimate_irrigated_area': True,           ###########################################
+        'skip_calculate_monthly_IWU': True,             ###########################################
+        'skip_calculate_growing_season_IWU': True,      ###########################################
+        'skip_spatial_unit_rasters_creation': False      ###########################################
     }
 
     run_all_preprocessing(
