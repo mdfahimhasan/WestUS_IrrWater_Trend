@@ -123,8 +123,7 @@ if __name__ == '__main__':
         'skip_irr_cropland_classification': True,       ###########################################
         'skip_estimate_irrigated_area': True,           ###########################################
         'skip_calculate_monthly_IWU': True,             ###########################################
-        'skip_calculate_growing_season_IWU': True,      ###########################################
-        'skip_spatial_unit_rasters_creation': False      ###########################################
+        'skip_calculate_growing_season_IWU': True       ###########################################
     }
 
     run_all_preprocessing(
@@ -140,8 +139,7 @@ if __name__ == '__main__':
         skip_irr_cropland_classification=data_preprocessing_bools['skip_irr_cropland_classification'],
         skip_estimate_irrigated_area=data_preprocessing_bools['skip_estimate_irrigated_area'],
         skip_calculate_monthly_IWU=data_preprocessing_bools['skip_calculate_monthly_IWU'],
-        skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'],
-        skip_spatial_unit_rasters_creation=data_preprocessing_bools['skip_spatial_unit_rasters_creation'])
+        skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'])
 
     ######## be very cautious. Monthly OpenET and GS OpenET would need to be processed by setting zeros to nan 
 # before aggregating for the panel data.

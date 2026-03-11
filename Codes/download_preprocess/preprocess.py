@@ -1238,26 +1238,4 @@ def run_all_preprocessing(years_list,
                                 peff_water_year_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
                                 iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                                 skip_processing=skip_calculate_growing_season_IWU)
-
-    # create spatial unit rasters (aquifer-state, aquifer, state)
-    raster_config_list = [
-            {
-                'raster_name'    : 'aquifer_state_ID',
-                'id_attribute'   : 'AQ_ST_ID',   # integer
-            },
-            {
-                'raster_name'    : 'aquifer_ID',
-                'id_attribute'   : 'AQ_ID',      # integer
-            },
-            {
-                'raster_name'    : 'state_ID',
-                'id_attribute'   : 'State_ID',   # integer
-            }
-        ]
-    
-    create_spatial_unit_rasters(aquifer_state_shp=PROJECT_ROOT / 'Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp',
-                                raster_config_list=raster_config_list,
-                                output_dir=PROJECT_ROOT / 'Data_main/rasters/Spatial_units',
-                                ref_raster=WestUS_raster,
-                                skip_processing=skip_spatial_unit_rasters_creation)
     
