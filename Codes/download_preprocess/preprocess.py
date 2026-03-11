@@ -1170,9 +1170,10 @@ def apply_ref_mask_to_precip(
 
     for fpath in precip_files:
         arr, meta  = read_raster_arr_object(fpath)
-
+        
         # set pixels to nodata where ref raster == 0
-        arr[zero_mask] = no_data_value
+        arr[arr == no_data_value] = np.nan
+        arr[np.isnan(arr) & zero_mask] = 0
 
         out_path = output_dir / fpath.name
         write_array_to_raster(arr, meta, meta.transform, out_path, nodata=no_data_value)
@@ -1182,6 +1183,7 @@ def apply_ref_mask_to_precip(
 
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
+                          skip_ref_mask_prism_precip=False,
                           skip_prism_precip_processing=False,
                           skip_prism_tmean_processing=False,
                           skip_irr_cropET_data_merge=False,
@@ -1192,8 +1194,7 @@ def run_all_preprocessing(years_list,
                           skip_irr_cropland_classification=False,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
-                          skip_calculate_growing_season_IWU=False,
-                          skip_ref_mask_prism_precip=False
+                          skip_calculate_growing_season_IWU=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1203,10 +1204,17 @@ def run_all_preprocessing(years_list,
     extract_month_from_GrowSeason_data(GS_data_dir=PROJECT_ROOT / 'Data_main/rasters/Growing_season',
                                        skip_processing=skip_process_GrowSeason_data)
 
+    # apply reference mask to monthly precipitation rasters
+    apply_ref_mask_to_precip(
+        precip_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly',
+        ref_raster_path=WestUS_raster,
+        output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
+        skip_processing=skip_ref_mask_prism_precip)
+    
     # PRISM precipitation data processing (growing season sum)
     dynamic_gs_sum_of_variable(year_list=years_list,
                                growing_season_dir=PROJECT_ROOT / 'Data_main/rasters/Growing_season',
-                               monthly_input_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly',
+                               monthly_input_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
                                gs_output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/growing_season',
                                ref_raster=WestUS_raster,
                                sum_keyword='Precip', skip_processing=skip_prism_precip_processing)
@@ -1292,10 +1300,5 @@ def run_all_preprocessing(years_list,
                                 iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                                 skip_processing=skip_calculate_growing_season_IWU)
     
-    # apply reference mask to monthly precipitation rasters
-    apply_ref_mask_to_precip(
-        precip_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly',
-        ref_raster_path=WestUS_raster,
-        output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
-        skip_processing=skip_ref_mask_prism_precip)
+
     
