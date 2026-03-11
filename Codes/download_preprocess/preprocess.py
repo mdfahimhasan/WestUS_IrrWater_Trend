@@ -1260,8 +1260,3 @@ def run_all_preprocessing(years_list,
                                 output_dir=PROJECT_ROOT / 'Data_main/rasters/Spatial_units',
                                 ref_raster=WestUS_raster,
                                 skip_processing=skip_spatial_unit_rasters_creation)
-
-######## be very cautious. Monthly OpenET and GS OpenET would need to be processed by setting zeros to nan 
-# before aggregating for the panel data.
-######## Check all variables for this issue. Ask calude if it would be possible to have it check within the code.
-# bacially, I can check with irrigated cropland dataset, which has nan values in non-irrigated areas
