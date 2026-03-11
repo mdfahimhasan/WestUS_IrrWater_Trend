@@ -1169,8 +1169,7 @@ def apply_ref_mask_to_precip(
     logger.info(f'Masking {len(precip_files)} monthly precip rasters...')
 
     for fpath in precip_files:
-        with rio.open(fpath) as src:
-            arr, meta  = read_raster_arr_object(src)
+        arr, meta  = read_raster_arr_object(fpath)
 
         # set pixels to nodata where ref raster == 0
         arr[zero_mask] = no_data_value
