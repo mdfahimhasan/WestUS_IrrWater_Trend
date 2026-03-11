@@ -9,6 +9,7 @@ import logging
 import datetime
 import numpy as np
 import rasterio as rio
+import geopandas as gpd
 from pathlib import Path
 from rasterio.warp import reproject, Resampling
 
@@ -597,30 +598,6 @@ def classify_irrigated_cropland(years, irrigated_fraction_dir,
     else:
         pass
     
-
-def create_stateID_raster(westUS_shp, output_dir, skip_processing=False):
-    """
-    Create a stateID reference raster.
-
-    :param westUS_shp: Western US shapefile with the attribute 'stateID'.
-    :param output_dir: Output directory to save the created raster.
-    :param skip_processing: Set True to skip this process.
-
-    :return: None.
-    """
-    if not skip_processing:
-        makedirs([output_dir])
-
-        shapefile_to_raster(input_shape=westUS_shp, output_dir=output_dir, raster_name='stateID.tif',
-                            burnvalue=None, use_attr=True,
-                            attribute='stateID', add=None, ref_raster=WestUS_raster,
-                            resolution=model_res, alltouched=False)
-
-        logger.info('created stateID reference raster...')
-
-    else:
-        pass
-    
     
 def calculate_monthly_IWU(years_list, irrigated_cropET_monthly_dir, peff_monthly_dir,
                           iwu_output_dir, skip_processing=False):
@@ -1063,6 +1040,92 @@ def calculate_irrigated_area_raster(years, irrigated_fraction_dir, irrigated_cro
     logger.info(f'Irrigated area ({area_unit}) calculation completed.')
     logger.info('---------------------------------------------------------------')
     
+    
+def create_spatial_unit_rasters(aquifer_state_shp, raster_config_list,
+                                output_dir, ref_raster=WestUS_raster,
+                                skip_processing=False):
+    """
+    Create integer unit ID rasters from an aquifer-state shapefile. 
+    Also creates a stateID raster. Multiple aquifer-related rasters 
+    can be created in one call by passing multiple configurations.
+
+    Output files:
+        output_dir/{raster_name}.tif          — integer ID raster (per config)
+
+
+    Example raster_configs (using aquifers_by_state.shp attribute names):
+    ----------------------------------------------------------------------
+        raster_config_list = [
+            {
+                'raster_name'    : 'aquifer_state_ID',
+                'id_attribute'   : 'AQ_ST_ID',   # integer
+            },
+            {
+                'raster_name'    : 'aquifer_ID',
+                'id_attribute'   : 'AQ_ID',      # integer
+            },
+            {
+                'raster_name'    : 'state_ID',
+                'id_attribute'   : 'State_ID',   # integer
+            }
+        ]
+
+    :param aquifer_state_shp: Path to aquifer-state shapefile (aquifers_by_state.shp).
+                               Must contain all id and name attributes listed in raster_configs.
+    :param raster_config_list: List of dicts, each with keys:
+                            'raster_name'    — output filename stem (without extension)
+                            'id_attribute'   — shapefile integer ID attribute to burn into raster
+    :param output_dir: Directory to save output rasters and lookup CSVs.
+    :param ref_raster: Reference raster for extent, resolution, and CRS alignment.
+                       Default: Western US 2km reference raster.
+    :param skip_processing: Set True to skip this step.
+
+    :return: None. Rasters are saved to disk.
+    """
+    if skip_processing:
+        return None
+
+    output_dir        = Path(output_dir)
+    aquifer_state_shp = Path(aquifer_state_shp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # load shapefiles
+    gdf = gpd.read_file(aquifer_state_shp)
+
+    # create aquifer-related + state ID rasters from raster_configs
+    for cfg in raster_config_list:
+        if 'raster_name' not in cfg or 'id_attribute' not in cfg:
+            raise ValueError('Each raster config must contain "raster_name" and "id_attribute" keys.')
+        
+        raster_name    = cfg['raster_name']
+        id_attribute   = cfg['id_attribute']
+
+        # validate attributes exist in shapefile
+        if id_attribute not in gdf.columns:
+            raise ValueError(
+                f'Attribute {id_attribute} not found in shapefile. '
+                f'Available columns: {list(gdf.columns)}'
+            )
+
+        logger.info(f'Creating {raster_name}.tif from attribute "{id_attribute}"...')
+
+        # burn integer ID attribute to raster
+        shapefile_to_raster(
+            input_shape=aquifer_state_shp,
+            output_dir=output_dir,
+            raster_name=f'{raster_name}.tif',
+            burnvalue=None,
+            use_attr=True,
+            attribute=id_attribute,
+            add=None,
+            ref_raster=ref_raster,
+            resolution=model_res,
+            alltouched=False
+        )
+
+    logger.info('All spatial unit rasters created.')
+    logger.info('---------------------------------------------------------------')
+
 
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
@@ -1076,7 +1139,9 @@ def run_all_preprocessing(years_list,
                           skip_irr_cropland_classification=False,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
-                          skip_calculate_growing_season_IWU=False):
+                          skip_calculate_growing_season_IWU=False,
+                          skip_spatial_unit_rasters_creation=False
+                          ):
     """
     Run all data pre-processing steps.
     """
@@ -1174,6 +1239,26 @@ def run_all_preprocessing(years_list,
                                 iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                                 skip_processing=skip_calculate_growing_season_IWU)
 
+    # create spatial unit rasters (aquifer-state, aquifer, state)
+    raster_config_list = [
+            {
+                'raster_name'    : 'aquifer_state_ID',
+                'id_attribute'   : 'AQ_ST_ID',   # integer
+            },
+            {
+                'raster_name'    : 'aquifer_ID',
+                'id_attribute'   : 'AQ_ID',      # integer
+            },
+            {
+                'raster_name'    : 'state_ID',
+                'id_attribute'   : 'State_ID',   # integer
+            }
+        ]
+    create_spatial_unit_rasters(aquifer_state_shp=PROJECT_ROOT / 'Data_main/shapefiles/aquifers_ROI/aquifers_by_state.shp',
+                                raster_config_list=raster_config_list,
+                                output_dir=PROJECT_ROOT / 'Data_main/rasters/Spatial_units',
+                                ref_raster=WestUS_raster,
+                                skip_processing=skip_spatial_unit_rasters_creation)
 
 ######## be very cautious. Monthly OpenET and GS OpenET would need to be processed by setting zeros to nan 
 # before aggregating for the panel data.
