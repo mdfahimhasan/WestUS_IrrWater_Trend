@@ -1126,6 +1126,60 @@ def create_spatial_unit_rasters(aquifer_state_shp, raster_config_list,
     logger.info('All spatial unit rasters created.')
     logger.info('---------------------------------------------------------------')
 
+def apply_ref_mask_to_precip(
+        precip_monthly_dir,
+        ref_raster_path,
+        output_dir,
+        no_data_value=-9999,
+        skip_processing=False):
+    """
+    Loop over monthly precipitation rasters and set pixel values to nodata
+    (-9999) wherever the reference raster has zero values (valid pixel wth Westen US landmass).
+
+    :param precip_monthly_dir: Directory containing monthly precip rasters.
+                                Pattern: *.tif
+    :param ref_raster_path:    Path to reference raster. Pixels with value == 0
+                                are treated as invalid and masked in output.
+    :param output_dir:         Directory to save masked output rasters.
+    :param no_data_value:      Nodata value written to masked pixels. Default: -9999.
+    :param skip_processing:    If True, skip this step.
+    """
+    if skip_processing:
+        return
+
+    precip_monthly_dir = Path(precip_monthly_dir)
+    ref_raster_path    = Path(ref_raster_path)
+    output_dir         = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # load reference raster once — used as mask for all monthly files
+    ref_arr  = read_raster_arr_object(ref_raster_path, get_file=False)
+
+    # boolean mask: True where ref == 0 (pixels to be set to nodata)
+    zero_mask = (ref_arr == 0)
+
+    # get all monthly precip tifs
+    precip_files = sorted(precip_monthly_dir.glob('*.tif'))
+    
+    if not precip_files:
+        logger.warning(f'No .tif files found in {precip_monthly_dir}')
+        return
+    
+    logger.info('-------------------------------------------------------')
+    logger.info(f'Masking {len(precip_files)} monthly precip rasters...')
+
+    for fpath in precip_files:
+        with rio.open(fpath) as src:
+            arr, meta  = read_raster_arr_object(src)
+
+        # set pixels to nodata where ref raster == 0
+        arr[zero_mask] = no_data_value
+
+        out_path = output_dir / fpath.name
+        write_array_to_raster(arr, meta, meta.transform, out_path, nodata=no_data_value)
+
+    logger.info(f'Done.')
+    logger.info('-------------------------------------------------------')
 
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
@@ -1140,7 +1194,7 @@ def run_all_preprocessing(years_list,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
                           skip_calculate_growing_season_IWU=False,
-                          skip_spatial_unit_rasters_creation=False
+                          skip_ref_mask_prism_precip=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1238,4 +1292,11 @@ def run_all_preprocessing(years_list,
                                 peff_water_year_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
                                 iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                                 skip_processing=skip_calculate_growing_season_IWU)
+    
+    # apply reference mask to monthly precipitation rasters
+    apply_ref_mask_to_precip(
+        precip_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly',
+        ref_raster_path=WestUS_raster,
+        output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
+        skip_processing=skip_ref_mask_prism_precip)
     
