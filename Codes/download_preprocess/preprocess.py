@@ -1254,7 +1254,7 @@ def run_all_preprocessing(years_list,
                 'id_attribute'   : 'State_ID',   # integer
             }
         ]
-    create_spatial_unit_rasters(aquifer_state_shp=PROJECT_ROOT / 'Data_main/shapefiles/ref_shapes/aquifers_by_state.shp',
+    create_spatial_unit_rasters(aquifer_state_shp=PROJECT_ROOT / 'Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp',
                                 raster_config_list=raster_config_list,
                                 output_dir=PROJECT_ROOT / 'Data_main/rasters/Spatial_units',
                                 ref_raster=WestUS_raster,
