@@ -254,7 +254,7 @@ def create_monthly_panel_data(
         else:            
             for col, (path_or_dir, agg) in annual_data_path_dict.items():
                 fpath = find_file(path_or_dir, f'*{year}*.tif')
-                print(fpath)
+
                 if fpath is None:
                     logger.warning(f'Annual data missing: col="{col}", year={year}.')
                     results_dict[col].extend([np.nan] * len(gdf) * len(list(growing_season_months)))
@@ -270,7 +270,7 @@ def create_monthly_panel_data(
         #-------------------------------------------------------------
         for col, (path_or_dir, agg) in static_data_path_dict.items():
             fpath = find_file(path_or_dir, f'*.tif')
-            print(fpath)
+     
             if fpath is None:
                 logger.warning(f'Static data missing: col="{col}"')
                 results_dict[col].extend([np.nan] * len(gdf) * len(growing_season_months))
@@ -289,7 +289,7 @@ def create_monthly_panel_data(
             # load monthly variable arrays
             for col, (d, agg) in monthly_data_path_dict.items():
                 fpath = find_file(d, f'*{year}_{month}.tif')
-                print(fpath)
+        
                 if fpath is None:
                     logger.warning(f'Monthly data missing: col="{col}", year={year}, month={month}.')
                     results_dict[col].extend([np.nan] * len(gdf)) # add NaN for all units for this month
