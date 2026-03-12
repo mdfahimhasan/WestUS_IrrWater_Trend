@@ -7,5 +7,5 @@
 #SBATCH --mail-type=BEGIN,END,FAIL,TIME_LIMIT
 #SBATCH --mail-user=Fahim.Hasan@colostate.edu
 
-python run_panel.py
+python panel_utils.py
 
