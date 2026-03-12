@@ -38,8 +38,8 @@ annual_data_dirs = {
         }
 
 static_data_dirs = {
-    'WTD_Rnd_Frst_m' : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF', 'mean'),
-    'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'mean')
+    'WTD_Rnd_Frst_m' : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF', 'median'),
+    'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'median')
 }
 
 create_monthly_panel_data(
