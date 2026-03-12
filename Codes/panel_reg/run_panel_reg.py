@@ -49,7 +49,7 @@ create_monthly_panel_data(
         aquifer_region_col='AQ_Region',
         aquifer_name_col = 'AQ_code',
         state_name_col = 'State',
-        irrigated_cropland_dir=PROJECT_ROOT / 'Data_main/rasters/irrigated_cropland',
+        irrigated_cropland_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland',
         monthly_data_dirs=monthly_data_dirs,
         annual_data_dirs=annual_data_dirs,
         static_data_dirs=static_data_dirs,
