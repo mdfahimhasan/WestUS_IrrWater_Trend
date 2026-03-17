@@ -1,2 +1,70 @@
 __pycache__/
 *.pyc
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+.virtual_documents/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large/binary data files (ignored by default)
+*.pdf
+*.tif
+*.tiff
+*.csv
+*.xlsx
+*.xls
+*.txt
+*.jpg
+*.jpeg
+*.png
+*.parquet
+*.pptx
+*.docx
+*.atx
+*.gdbtable
+*.gdbtablx
+*.gdbindexes
+*.horizon
+*.freelist
+*.spx
+*.xml
+*.ovr
+*.mp4
+*.fix
+*.rtf
+*.qgz
+*.tfw
+*.joblib
+
+# BIL raster format
+*.bil
+*.hdr
+*.blw
+*.stx
+*.aux
+
+# Shapefile-related extensions
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+*.qmd
+*.sbn
+*.sbx
+*.shp.xml
+
+# Aux files
+*.aux.xml
