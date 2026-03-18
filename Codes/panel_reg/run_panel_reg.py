@@ -39,7 +39,8 @@ annual_data_dirs = {
 
 static_data_dirs = {
     'WTD_Rnd_Frst_m' : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF', 'median'),
-    'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'median')
+    'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'median'),
+    'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/GW_use_%/GW_use_binary/GW_use_perc_ROI_final.tif', 'median')
 }
 
 create_monthly_panel_data(
