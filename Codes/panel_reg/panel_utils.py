@@ -406,7 +406,7 @@ def compute_anomaly_in_df(df, regressors_for_anomalies_dict,
         anomaly_col = column_prefix + '_anomaly'
         df[anomaly_col] = df[col] - df[baseline_col]
         
-    logger.info(f'STEP 1: Anomaly columns created for: {list(regressors_for_anomalies_dict.keys())}\n')
+    logger.info(f'Anomaly columns created for: {list(regressors_for_anomalies_dict.keys())}\n')
 
     return df
 
@@ -444,40 +444,6 @@ def mean_WTD_col_for_unit(df, WTD_col, unit_col='aquifer_region'):
     return df
 
 
-def create_FE_columns_in_df(df, fe_config,
-                            year_col='year', 
-                            month_col='month'):
-    """
-    Create composite fixed effects columns and time_id for pyfixest panel regression.
-
-    :param df: Monthly panel dataframe.
-    :param fe_config: Dictionary mapping new FE column names to lists of columns
-        to concatenate. Example:
-        {
-            'aquifer_region_month' : ['aquifer_region', 'month'],
-            'aquifer_type_year'    : ['aquifer_type',   'year'],
-        }
-    :param year_col:  Column name for year.  Default: 'year'
-    :param month_col: Column name for month. Default: 'month'
-
-    :return: Dataframe with new FE columns and time_id column added.
-    """
-
-    for fe_col, source_cols in fe_config.items():
-        df[fe_col] = df[source_cols[0]].astype(str)
-        
-        for col in source_cols[1:]:
-            df[fe_col] = df[fe_col] + '_' + df[col].astype(str)
-
-    # time_id always created — needed for Newey-West SE ordering in pyfixest
-    df['time_id'] = (df[year_col].astype(str) + '-' +
-                     df[month_col].astype(str).str.zfill(2))
-    
-    logger.info(f'STEP 2: Fixed effects columns created for: {list(fe_config.keys())}\n')
-
-    return df
-
-
 def create_categorical_cols_in_df(df, categorical_config):
     """
     Create pd.Categorical columns for use as interaction variables in pyfixest regression.
@@ -487,21 +453,11 @@ def create_categorical_cols_in_df(df, categorical_config):
 
     Example inputs:
     ---------------
-        # RQ1 — nominal aquifer type, no reference category (include_base_regressors=False)
         categorical_config = {
             'aq_type_cat': {
                 'col_name' : 'aquifer',
                 'assigned_categories' : ['BR', 'CP', 'CV', 'DBA', 'HPA', 'RG', 'SRP'],
                 'impose_order'    : False
-            }
-        }
-
-        # RQ4 — ordered WTD class, shallow is reference (include_base_regressors=True)
-        categorical_config = {
-            'WTD_cat': {
-                'col_name' : 'WTD_class',
-                'assigned_categories' : ['shallow', 'moderate', 'deep'],
-                'impose_order'    : True
             }
         }
 
@@ -537,7 +493,41 @@ def create_categorical_cols_in_df(df, categorical_config):
 
         df[new_col] = pd.Categorical(df[col_name], categories=assigned_categories,ordered=impose_order)
 
-    logger.info(f'STEP 3: Categorical columns created: {list(categorical_config.keys())}\n')
+    logger.info(f'Categorical columns created: {list(categorical_config.keys())}\n')
+
+    return df
+
+
+def create_FE_columns_in_df(df, fe_config,
+                            year_col='year', 
+                            month_col='month'):
+    """
+    Create composite fixed effects columns and time_id for pyfixest panel regression.
+
+    :param df: Monthly panel dataframe.
+    :param fe_config: Dictionary mapping new FE column names to lists of columns
+        to concatenate. Example:
+        {
+            'aquifer_region_month' : ['aquifer_region', 'month'],
+            'aquifer_type_year'    : ['aquifer_type',   'year'],
+        }
+    :param year_col:  Column name for year.  Default: 'year'
+    :param month_col: Column name for month. Default: 'month'
+
+    :return: Dataframe with new FE columns and time_id column added.
+    """
+
+    for fe_col, source_cols in fe_config.items():
+        df[fe_col] = df[source_cols[0]].astype(str)
+        
+        for col in source_cols[1:]:
+            df[fe_col] = df[fe_col] + '_' + df[col].astype(str)
+
+    # time_id always created — needed for Newey-West SE ordering in pyfixest
+    df['time_id'] = (df[year_col].astype(str) + '-' +
+                     df[month_col].astype(str).str.zfill(2))
+    
+    logger.info(f'Fixed effects columns created for: {list(fe_config.keys())}\n')
 
     return df
 
