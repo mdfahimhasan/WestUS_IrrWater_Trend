@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from Codes.panel_reg.panel_utils import create_monthly_panel_data
+from Codes.panel_reg.panel_utils import create_monthly_panel_dataframe
 
 # configure logging
 logging.basicConfig(
@@ -43,7 +43,7 @@ static_data_dirs = {
     'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/GW_use_%/GW_use_binary/GW_use_perc_ROI_final.tif', 'median')
 }
 
-create_monthly_panel_data(
+create_monthly_panel_dataframe(
         years_list=range(1986, 2024),   # 1986–2023
         aquifer_state_shapefile=PROJECT_ROOT / 'Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp',
         aquifer_state_name_col='AQ_State',
