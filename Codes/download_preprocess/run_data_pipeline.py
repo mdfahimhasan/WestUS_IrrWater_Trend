@@ -124,7 +124,8 @@ if __name__ == '__main__':
         'skip_irr_cropland_classification': True,       ###########################################
         'skip_estimate_irrigated_area': True,           ###########################################
         'skip_calculate_monthly_IWU': True,             ###########################################
-        'skip_calculate_growing_season_IWU': True       ###########################################
+        'skip_calculate_growing_season_IWU': True,      ###########################################
+        'skip_create_GW_use_binary_rasters': True,      ###########################################
     }
 
     run_all_preprocessing(
@@ -141,4 +142,5 @@ if __name__ == '__main__':
         skip_irr_cropland_classification=data_preprocessing_bools['skip_irr_cropland_classification'],
         skip_estimate_irrigated_area=data_preprocessing_bools['skip_estimate_irrigated_area'],
         skip_calculate_monthly_IWU=data_preprocessing_bools['skip_calculate_monthly_IWU'],
-        skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'])
+        skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'],
+        skip_create_GW_use_binary_rasters=data_preprocessing_bools['skip_create_GW_use_binary_rasters'])

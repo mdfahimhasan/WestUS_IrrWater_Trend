@@ -3,14 +3,17 @@
 # Colorado State university
 # Fahim.Hasan@colostate.edu
 
+import os
 import re
 import sys
 import logging
 import datetime
 import numpy as np
 import rasterio as rio
+import rioxarray as rxr
 import geopandas as gpd
 from pathlib import Path
+from rasterio.mask import mask
 from rasterio.warp import reproject, Resampling
 
 # Project root directory (works regardless of cwd)
@@ -1181,6 +1184,161 @@ def apply_ref_mask_to_precip(
     logger.info(f'Done.')
     logger.info('-------------------------------------------------------')
 
+
+
+def reclassify_GW_use_perc_rasters(GW_use_perc_dir, westUS_ROI,
+                                   output_dir, skip_processing=False):
+    """
+    Reclassifies Groundwater (GW) use percentage rasters into a binary classification
+    (Groundwater-Dominated vs. Conjunctive Use) based on a specific Region of Interest (ROI).
+
+    This function performs the following steps:
+    1. Clips the source GW use raster to the West US ROI shapefile.
+    2. Manually corrects data for the Rio Grande Basin (San Luis Valley) to 100% GW use
+       based on known local irrigation practices.
+    3. Reclassifies the data: >= 70% GW use becomes 1 (Dominated), otherwise 0 (Conjunctive).
+    4. Masks the result to match the valid pixels of the pumping prediction rasters.
+
+    parameters:
+
+    GW_use_perc_dir (str): Directory containing the source GW use percentage GeoTIFFs.
+    westUS_ROI (str): Filepath to the shapefile defining the Western US Region of Interest.
+    output_dir (str): Directory path where the output rasters will be saved.
+    skip_processing (bool, optional): If True, skips execution. Defaults to False.
+
+    Returns:
+        None
+    """
+    if not skip_processing:
+
+        # making output directories
+        GW_use_perc_dir = Path(GW_use_perc_dir)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Opening GW use raster
+        # All annual data are same. Taking the 1st one selected.
+        gw_use_perc_raster = list(GW_use_perc_dir.glob('*.tif'))[0]
+        raster_file = rio.open(gw_use_perc_raster)
+
+        # opening input shapefile and taking it to a GeoJSON format
+        shp_extent = gpd.read_file(westUS_ROI)
+        shp_extent = shp_extent.to_crs(crs=raster_file.crs)
+        geoms = [geom.__geo_interface__ for geom in shp_extent.geometry]  # GeoJSON format
+
+        masked_arr, mask_transform = mask(dataset=raster_file,
+                                          shapes=geoms, filled=True,
+                                          crop=True, invert=False,
+                                          all_touched=False)
+
+        masked_arr = masked_arr.squeeze()
+
+        # saving clipped raster for WestUS ROI
+        interim_output_raster = output_dir / 'GW_use_perc_ROI_interim.tif'
+
+        with rio.open(
+                interim_output_raster,
+                'w',
+                driver='GTiff',
+                height=masked_arr.shape[0],
+                width=masked_arr.shape[1],
+                count=1,
+                dtype=masked_arr.dtype,
+                crs=raster_file.crs,
+                transform=mask_transform,
+                nodata=-9999
+        ) as dst:
+            dst.write(masked_arr, 1)
+
+        ################################################################################################################
+        # # updating GW use % data in the Rio Grande Basin (we know for sure that the northern SLV is
+        # ~100% GW irrigated and the southern SLV is ~74% GW irrigated)
+
+        # # northern SLV -> 100%
+        lat_min_n, lat_max_n = 37.50, 38.498
+        lon_min, lon_max = -106.657, -105.128
+
+        # setting values of the lat-lon window to 100%
+        gw_perc = rxr.open_rasterio(interim_output_raster)
+
+        gw_perc.loc[
+            dict(
+                y=slice(lat_max_n, lat_min_n),
+                x=slice(lon_min, lon_max)
+            )] = 100
+        
+        gw_perc_arr = gw_perc.values.squeeze().squeeze()
+
+        # saving the modified raster
+        with rio.open(
+                os.path.join(output_dir, 'GW_use_perc_ROI.tif'),
+                'w',
+                driver='GTiff',
+                height=gw_perc_arr.shape[0],
+                width=gw_perc_arr.shape[1],
+                count=1,
+                dtype=gw_perc_arr.dtype,
+                crs=raster_file.crs,
+                transform=mask_transform,
+                nodata=-9999
+        ) as dst:
+            dst.write(gw_perc_arr, 1)
+
+        # # southern SLV -> 74%
+        lat_min_s, lat_max_s = 36.96, 37.499
+
+        # setting values of the lat-lon window to 74%
+        gw_perc_new = rxr.open_rasterio(os.path.join(output_dir, 'GW_use_perc_ROI.tif'))
+
+        gw_perc_new.loc[
+            dict(
+                y=slice(lat_max_s, lat_min_s),
+                x=slice(lon_min, lon_max)
+            )] = 74
+        
+        gw_perc_arr = gw_perc_new.values.squeeze().squeeze()
+
+        # saving the modified raster
+        with rio.open(
+                os.path.join(output_dir, 'GW_use_perc_ROI_final.tif'),
+                'w',
+                driver='GTiff',
+                height=gw_perc_arr.shape[0],
+                width=gw_perc_arr.shape[1],
+                count=1,
+                dtype=gw_perc_arr.dtype,
+                crs=raster_file.crs,
+                transform=mask_transform,
+                nodata=-9999
+        ) as dst:
+            dst.write(gw_perc_arr, 1)
+
+        ################################################################################################################
+        # # creating a binary raster
+        # >=70% GW use will be 1 (groundwater-dominated), others will be 0 (conjunctive use)
+        gw_perc_binary = np.where(gw_perc_arr >= 70, 1, 0).squeeze()
+
+        # save the binary classified raster
+        binary_raster = os.path.join(output_dir, 'GW_use_ROI_binary.tif')
+        with rio.open(
+                binary_raster,
+                'w',
+                driver='GTiff',
+                height=gw_perc_binary.shape[0],
+                width=gw_perc_binary.shape[1],
+                count=1,
+                dtype=gw_perc_binary.dtype,
+                crs=raster_file.crs,
+                transform=mask_transform,
+                nodata=-9999
+        ) as dst:
+            dst.write(gw_perc_binary, 1)
+
+        # delete the interim raster
+        gw_perc.close()
+        os.remove(interim_output_raster)
+        
+
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
                           skip_ref_mask_prism_precip=False,
@@ -1194,7 +1352,8 @@ def run_all_preprocessing(years_list,
                           skip_irr_cropland_classification=False,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
-                          skip_calculate_growing_season_IWU=False
+                          skip_calculate_growing_season_IWU=False,
+                          skip_create_GW_use_binary_rasters=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1300,5 +1459,10 @@ def run_all_preprocessing(years_list,
                                 iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                                 skip_processing=skip_calculate_growing_season_IWU)
     
+    # reclassify GW use percentage rasters into binary classification (GW-dominated vs. conjunctive use)
+    reclassify_GW_use_perc_rasters(GW_use_perc_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%',
+                                   westUS_ROI=WestUS_shape,
+                                   output_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary',
+                                   skip_processing=skip_create_GW_use_binary_rasters)
 
     
