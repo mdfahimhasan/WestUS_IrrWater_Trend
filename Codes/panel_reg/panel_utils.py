@@ -274,7 +274,7 @@ def create_monthly_panel_dataframe(
         #-------------------------------------------------------------
         for col, (path_or_dir, agg) in static_data_path_dict.items():
             fpath = find_file(path_or_dir, f'*.tif')
-     
+
             if fpath is None:
                 logger.warning(f'Static data missing: col="{col}"')
                 results_dict[col].extend([np.nan] * len(gdf) * len(growing_season_months))
