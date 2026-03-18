@@ -40,7 +40,7 @@ annual_data_dirs = {
 static_data_dirs = {
     'WTD_Rnd_Frst_m' : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF', 'median'),
     'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'median'),
-    'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary/GW_use_perc_ROI_binary.tif', 'median')
+    'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary/GW_use_ROI_binary.tif', 'median')
 }
 
 create_monthly_panel_dataframe(
@@ -56,7 +56,7 @@ create_monthly_panel_dataframe(
         static_data_dirs=static_data_dirs,
         output_csv_path=PROJECT_ROOT / 'Data_main/panel_data/panel_data_monthly.csv',
         column_rename=None,
-        include_zero_cols=['Precip_mm'],
+        include_zero_cols=['Precip_mm', 'GW_or_conjunctive'],
         growing_season_months=range(4, 11),
         no_data_value=-9999,
         skip_processing=False)

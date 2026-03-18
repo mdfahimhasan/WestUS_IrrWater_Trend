@@ -211,7 +211,6 @@ def create_monthly_panel_dataframe(
     logger.info('---------------------------------------------------------------')
     logger.info(f'Starting to compile monthly panel dataframe')
  
-    
     # -------------------------------------------------------------------------
     # path setup
     # -------------------------------------------------------------------------
@@ -281,7 +280,7 @@ def create_monthly_panel_dataframe(
                 continue
             
             arr, transform = load_arr(fpath)
-            masked = apply_irr_mask(arr, irr_mask, col)
+            masked = apply_irr_mask(arr, irr_mask, col)  
             vals   = run_zonal(masked, transform, agg) # here we are not masking with irr_mask; some WTD data is CONUS wide
             results_dict[col].extend(vals * len(growing_season_months))
 
