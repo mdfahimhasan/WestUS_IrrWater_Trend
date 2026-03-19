@@ -41,22 +41,28 @@ static_data_dirs = {
     'WTD_Rnd_Frst_m' : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF', 'median'),
     'WTD_USGS_m' : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD', 'median'),
     'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary/GW_use_ROI_binary.tif', 'median')
-}
+    }
 
-create_monthly_panel_dataframe(
-        years_list=range(1986, 2024),   # 1986–2023
-        aquifer_state_shapefile=PROJECT_ROOT / 'Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp',
-        aquifer_state_name_col='AQ_State',
-        aquifer_region_col='AQ_Region',
-        aquifer_name_col = 'AQ_code',
-        state_name_col = 'State',
-        irrigated_cropland_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland',
-        monthly_data_dirs=monthly_data_dirs,
-        annual_data_dirs=annual_data_dirs,
-        static_data_dirs=static_data_dirs,
-        output_csv_path=PROJECT_ROOT / 'Data_main/panel_data/panel_data_monthly.csv',
-        column_rename=None,
-        include_zero_cols=['Precip_mm', 'GW_or_conjunctive'],
-        growing_season_months=range(4, 11),
-        no_data_value=-9999,
-        skip_processing=False)
+skip_panel_df_creation = False
+
+if __name__ == "__main__":
+
+    if not skip_panel_df_creation:
+        create_monthly_panel_dataframe(
+            years_list=range(1986, 2024),   # 1986–2023
+            aquifer_state_shapefile=PROJECT_ROOT / 'Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp',
+            aquifer_state_name_col='AQ_State',
+            aquifer_region_col='AQ_Region',
+            aquifer_name_col = 'AQ_code',
+            state_name_col = 'State',
+            irrigated_cropland_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland',
+            monthly_data_dirs=monthly_data_dirs,
+            annual_data_dirs=annual_data_dirs,
+            static_data_dirs=static_data_dirs,
+            output_csv_path=PROJECT_ROOT / 'Data_main/panel_data/panel_data_monthly.csv',
+            column_rename=None,
+            include_zero_cols=['Precip_mm', 'GW_or_conjunctive'],
+            growing_season_months=range(4, 11),
+            no_data_value=-9999,
+            skip_processing=skip_panel_df_creation
+            )
