@@ -68,3 +68,5 @@ __pycache__/
 
 # Aux files
 *.aux.xmlData_main/panel_data/panel_data_monthly.csv
+QGIS_maps/
+docs/
