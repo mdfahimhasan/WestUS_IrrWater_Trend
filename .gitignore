@@ -67,4 +67,4 @@ __pycache__/
 *.shp.xml
 
 # Aux files
-*.aux.xml
+*.aux.xmlData_main/panel_data/panel_data_monthly.csv
