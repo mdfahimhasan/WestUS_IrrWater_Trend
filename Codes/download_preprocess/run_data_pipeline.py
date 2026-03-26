@@ -112,27 +112,29 @@ if __name__ == '__main__':
                   2018, 2019, 2020, 2021, 2022, 2023,
                   # 2024       # will add year 2024 in the pipeline once OpenET data for 2024 - month 12 is available
                 ],
-        'skip_process_GrowSeason_data': True,           ###########################################
-        'skip_ref_mask_prism_precip': True,             ###########################################
-        'skip_sum_prism_precip': True,                  ###########################################
-        'skip_prism_tmean_processing': True,            ###########################################
-        'skip_irr_cropET_data_merge': True,             ###########################################
-        'skip_sum_irrigated_cropET': True,              ###########################################
-        'skip_sum_usda_scs_peff_growing_season': True,  ###########################################
-        'skip_sum_usda_scs_peff_water_year': True,      ###########################################
-        'skip_merge_irr_fraction_data': True,           ###########################################
-        'skip_irr_cropland_classification': True,       ###########################################
-        'skip_estimate_irrigated_area': True,           ###########################################
-        'skip_calculate_monthly_IWU': True,             ###########################################
-        'skip_calculate_growing_season_IWU': True,      ###########################################
-        'skip_create_GW_use_binary_rasters': True,      ###########################################
+        'skip_process_GrowSeason_data': True,              ###########################################
+        'skip_ref_mask_prism_precip': True,                ###########################################
+        'skip_sum_precip_growing_season': True,            ###########################################
+        'skip_sum_prism_winter_months': True,              ###########################################
+        'skip_prism_tmean_processing': True,               ###########################################
+        'skip_irr_cropET_data_merge': True,                ###########################################
+        'skip_sum_irrigated_cropET': True,                 ###########################################
+        'skip_sum_usda_scs_peff_growing_season': True,     ###########################################
+        'skip_sum_usda_scs_peff_water_year': True,         ###########################################
+        'skip_merge_irr_fraction_data': True,              ###########################################
+        'skip_irr_cropland_classification': True,          ###########################################
+        'skip_estimate_irrigated_area': True,              ###########################################
+        'skip_calculate_monthly_IWU': True,                ###########################################
+        'skip_calculate_growing_season_IWU': True,         ###########################################
+        'skip_create_GW_use_binary_rasters': True,         ###########################################
     }
 
     run_all_preprocessing(
         years_list=data_preprocessing_bools['years'],
         skip_process_GrowSeason_data=data_preprocessing_bools['skip_process_GrowSeason_data'],
         skip_ref_mask_prism_precip=data_preprocessing_bools['skip_ref_mask_prism_precip'],
-        skip_prism_precip_processing=data_preprocessing_bools['skip_sum_prism_precip'],
+        skip_sum_precip_growing_season=data_preprocessing_bools['skip_sum_precip_growing_season'],
+        skip_sum_winter_precip=data_preprocessing_bools['skip_sum_prism_winter_months'],
         skip_prism_tmean_processing=data_preprocessing_bools['skip_prism_tmean_processing'],
         skip_irr_cropET_data_merge=data_preprocessing_bools['skip_irr_cropET_data_merge'],
         skip_sum_irrigated_cropET=data_preprocessing_bools['skip_sum_irrigated_cropET'],
