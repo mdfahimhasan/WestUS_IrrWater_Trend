@@ -208,6 +208,39 @@ def create_monthly_panel_dataframe(
         # rasterstats returns None (not NaN) when no valid pixels exist
         return [r.get(stat) if r.get(stat) is not None else np.nan
                 for r in results]
+        
+    # -------------------------------------------------------------------------
+    # helper: compile annual winter precip dataset into monthly values with a linear decay trend
+    # -------------------------------------------------------------------------
+    # Winter precip (sum from November to March) in an annual dataset
+    # We are assigning the data to the monthly panel data.
+    # The data will be assigned in a linear decay trned. 
+    # For example, April receives the 75% of the winter precip, May receives 50%, 
+    # June receives 25%, and July–October receive 0% of the winter precip.
+    
+    def compile_winter_precip(dir, year, month, agg):
+        fpath = find_file(dir, f'*{year}.tif')
+
+        arr, transform = load_arr(fpath)
+        masked = apply_irr_mask(arr, irr_mask, col)
+        
+        if month == 4:
+            weight = 0.75
+            vals = np.array(run_zonal(masked, transform, agg)) * weight
+        
+        elif month == 5:
+            weight = 0.5
+            vals = np.array(run_zonal(masked, transform, agg)) * weight
+        
+        elif month == 6:
+            weight = 0.25
+            vals = np.array(run_zonal(masked, transform, agg)) * weight
+        
+        else:
+            vals = [0] * len(gdf)  # assign zero for July–October
+        
+        return vals                
+
 
     logger.info('---------------------------------------------------------------')
     logger.info(f'Starting to compile monthly panel dataframe')
@@ -256,8 +289,8 @@ def create_monthly_panel_dataframe(
             pass
         
         else:            
-            for col, (path_or_dir, agg) in annual_data_path_dict.items():
-                fpath = find_file(path_or_dir, f'*{year}*.tif')
+            for col, (dir_path, agg) in annual_data_path_dict.items():
+                fpath = find_file(dir_path, f'*{year}*.tif')
 
                 if fpath is None:
                     logger.warning(f'Annual data missing: col="{col}", year={year}.')
@@ -272,8 +305,8 @@ def create_monthly_panel_dataframe(
         #-------------------------------------------------------------
         # extract static data for this year
         #-------------------------------------------------------------
-        for col, (path_or_dir, agg) in static_data_path_dict.items():
-            fpath = find_file(path_or_dir, f'*.tif')
+        for col, (dir_path, agg) in static_data_path_dict.items():
+            fpath = find_file(dir_path, f'*.tif')
 
             if fpath is None:
                 logger.warning(f'Static data missing: col="{col}"')
@@ -291,18 +324,26 @@ def create_monthly_panel_dataframe(
         for month in growing_season_months:
 
             # load monthly variable arrays
-            for col, (d, agg) in monthly_data_path_dict.items():
-                fpath = find_file(d, f'*{year}_{month}.tif')
-        
-                if fpath is None:
-                    logger.warning(f'Monthly data missing: col="{col}", year={year}, month={month}.')
-                    results_dict[col].extend([np.nan] * len(gdf)) # add NaN for all units for this month
-                    continue
+            for col, (dir_path, agg) in monthly_data_path_dict.items():
                 
-                arr, transform = load_arr(fpath)
-                masked = apply_irr_mask(arr, irr_mask, col)
-                vals = run_zonal(masked, transform, agg)
-                results_dict[col].extend(vals)
+                data = list(dir_path.glob(f'*{year}*.tif'))
+                
+                if len(data) == 0:
+                    raise ValueError(f'Monthly data missing: col="{col}", year={year}, month={month}.')
+                                        
+                if 'winterprecip' in col.lower():
+                             
+                    vals = compile_winter_precip(dir_path, year, month, agg)
+                    results_dict[col].extend(vals)
+                        
+                        
+                else:
+                    fpath = find_file(dir_path, f'*{year}_{month}.tif')                
+                
+                    arr, transform = load_arr(fpath)
+                    masked = apply_irr_mask(arr, irr_mask, col)
+                    vals = run_zonal(masked, transform, agg)
+                    results_dict[col].extend(vals)
 
             # ----------------------------------------------------------------------
             # add aquifer-state/aquifer/state/year/month info for this month

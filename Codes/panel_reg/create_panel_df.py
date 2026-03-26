@@ -31,6 +31,7 @@ monthly_data_dirs = {
             'IWU_v2_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v2_current_prev1', 'mean'),
             'IWU_v3_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v3_current_prev2', 'mean'),
             'Precip_mm' : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked', 'mean'),
+            'WinterPrecip_mm' : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/winter_precip', 'mean'),
             'Tmean_C' : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Tmean/monthly', 'mean')
         }
 annual_data_dirs = {
@@ -43,7 +44,7 @@ static_data_dirs = {
     'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary/GW_use_ROI_binary.tif', 'median')
     }
 
-skip_panel_df_creation = False
+skip_panel_df_creation = False      #########################
 
 if __name__ == "__main__":
 
