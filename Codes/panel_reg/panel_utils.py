@@ -3,6 +3,7 @@
 # Colorado State university
 # Fahim.Hasan@colostate.edu
 
+import re
 import sys
 import logging
 import numpy as np
@@ -406,7 +407,7 @@ def compute_anomaly_in_df(df, regressors_for_anomalies_dict,
         anomaly_col = column_prefix + '_anomaly'
         df[anomaly_col] = df[col] - df[baseline_col]
         
-    logger.info(f'Anomaly columns created for: {list(regressors_for_anomalies_dict.keys())}\n')
+    logger.info(f'STEP 1: Anomaly columns created for: {list(regressors_for_anomalies_dict.keys())}\n')
 
     return df
 
@@ -439,7 +440,7 @@ def mean_WTD_col_for_unit(df, WTD_col, unit_col='aquifer_region'):
     df = df.drop(columns=[WTD_col])
     df = df.merge(group_df, on=unit_col, how='left')
 
-    logger.info(f'WTD column "{WTD_col}" replaced with unit-level mean → "WTD_mean_m"\n')
+    logger.info(f'STEP 2: WTD column "{WTD_col}" replaced with unit-level mean → "WTD_mean_m"\n')
 
     return df
 
@@ -493,7 +494,7 @@ def create_categorical_cols_in_df(df, categorical_config):
 
         df[new_col] = pd.Categorical(df[col_name], categories=assigned_categories,ordered=impose_order)
 
-    logger.info(f'Categorical columns created: {list(categorical_config.keys())}\n')
+    logger.info(f'STEP 3: Categorical columns created: {list(categorical_config.keys())}\n')
 
     return df
 
@@ -509,7 +510,7 @@ def create_FE_columns_in_df(df, fe_config,
         to concatenate. Example:
         {
             'aquifer_region_month' : ['aquifer_region', 'month'],
-            'aquifer_type_year'    : ['aquifer_type',   'year'],
+            'aquifer_type_year'    : ['aquifer_type'],
         }
     :param year_col:  Column name for year.  Default: 'year'
     :param month_col: Column name for month. Default: 'month'
@@ -518,24 +519,26 @@ def create_FE_columns_in_df(df, fe_config,
     """
 
     for fe_col, source_cols in fe_config.items():
-        df[fe_col] = df[source_cols[0]].astype(str)
+        df[f'{fe_col}_fe'] = df[source_cols[0]].astype(str)
         
-        for col in source_cols[1:]:
-            df[fe_col] = df[fe_col] + '_' + df[col].astype(str)
+        if len(source_cols) > 1:
+            for col in source_cols[1:]:
+                df[f'{fe_col}_fe'] = df[f'{fe_col}_fe'] + '_' + df[col].astype(str)
 
-    # time_id always created — needed for Newey-West SE ordering in pyfixest
-    df['time_id'] = (df[year_col].astype(str) + '-' +
-                     df[month_col].astype(str).str.zfill(2))
+    # time_id always created — needed for DK/NW SE ordering in pyfixest (must be integer)
+    df['time_id'] = df[year_col] * 12 + df[month_col]
     
-    logger.info(f'Fixed effects columns created for: {list(fe_config.keys())}\n')
+    logger.info(f'STEP 4: Fixed effects columns created for: {list(fe_config.keys())}\n')
+    logger.info('***** Not all FE columns will be included in the regression. *****\n')
 
     return df
 
 def pyfixest_fit_FE(df, target_col, regressor_cols, fe_cols,
                     include_base_regressors=True, 
                     interaction_dict=None,
+                    add_linear_trend=False,
                     unit_col=None, trend_col=None,
-                    vcov_col='time_id', vcov_method="driscoll-kraay", 
+                    vcov_method='DK', vcov_col='time_id',
                     bandwidth=24):
     """
     Fit a pyfixest panel regression model with specified target, regressors,
@@ -565,56 +568,71 @@ def pyfixest_fit_FE(df, target_col, regressor_cols, fe_cols,
     :param trend_col: Column name for linear trend variable (e.g. 'year').
         If provided with unit_col, adds a unit-specific linear trend as
         unit_col[trend_col] in the formula.
+        
+    param vcov_method: SE estimation method. Default: 'DK'.
+        - 'DK'   : Driscoll-Kraay. Robust to serial correlation, spatial
+                    correlation across units, and heteroskedasticity. Uses a
+                    kernel-based estimator with no minimum cluster
+                    requirement. Recommended for small N panels with
+                    shared climate shocks (ENSO, PDO). Default.
+
+                    Requires both vcov_col (time_id) and unit_col (panel_id):
+                    within each time period, tracks whether residuals move
+                    together across units (spatial correlation); across time
+                    periods, tracks whether residuals are autocorrelated
+                    (serial correlation). Bandwidth controls how many time
+                    lags to account for.
+
+        - 'NW'   : Newey-West. Robust to serial correlation and
+                   heteroskedasticity only. Requires both vcov_col (time_id)
+                   and unit_col (panel_id). Treats units as independent —
+                   does not account for spatial correlation across units.
+                  
+        - 'CRV1' : Clustered SEs. Allows free correlation within
+                   each cluster across all time periods. More flexible
+                   than NW within units but ignores cross-unit
+                   correlation. Asymptotic — requires large N to be
+                   reliable (≥20-30 clusters).
     
     :param vcov_col: Column name for SE estimation. Usage depends on vcov_method:
-        - 'driscoll-kraay' : time-ordered column (e.g. 'time_id')
-        - 'NW'             : time-ordered column (e.g. 'time_id')
-        - 'CRV1'           : cluster column (e.g. 'aquifer_region')
-        
-        Default is 'time_id' for Driscoll-Kraay.
-        
-    :param vcov_method: SE estimation method. Default: 'driscoll-kraay'.
-        - 'driscoll-kraay' : Robust to serial correlation, spatial correlation
-                             across units, and heteroskedasticity. Uses a
-                             kernel-based estimator with no minimum cluster
-                             requirement. Recommended for small N panels with
-                             shared climate shocks (ENSO, PDO). Default.
-                             
-                             Uses time_id as the organizing dimension for both
-                             corrections: within each time period, tracks
-                             whether residuals move together across units
-                             (spatial correlation); across time periods,
-                             tracks whether residuals are autocorrelated
-                             (serial correlation). Bandwidth controls how
-                             many time lags to account for.
-                             
-        - 'NW'             : Newey-West. Robust to serial correlation and
-                             heteroskedasticity only. Treats units as
-                             independent — does not account for spatial
-                             correlation across units.
-        - 'CRV1'           : Clustered SEs. Allows free correlation within
-                             each cluster across all time periods. More flexible
-                             than NW within units but ignores cross-unit
-                             correlation. Asymptotic — requires large N to be
-                             reliable (≥20-30 clusters).
+        - 'DK'    : time-ordered column (e.g. 'time_id')
+        - 'NW'    : time-ordered column (e.g. 'time_id')
+        - 'CRV1'  : cluster column
+                    ["aquifer_region", "time_id"] -> 2-way clustering
+                    "aquifer_region"              -> 1-way clustering
+
+        Default is 'time_id' for Driscoll-Kraay (DK).
     
     :param bandwidth: Number of time lags for autocorrelation correction.
-        Only applies to 'driscoll-kraay' and 'NW'. Default: 24 (covers
+        Only applies to 'DK' and 'NW'. Default: 24 (covers
         2 years of monthly autocorrelation).
 
     :return: Fitted pyfixest model object.
     """
     
+    #----------------------------------------------------------------------------
     # base regressors
+    #----------------------------------------------------------------------------
+    
     # the else block handles the case (include_base_regressors=False) where interaction_dict is provided 
     # for the regressors and no separate base regressors are required
     regressors = ' + '.join(regressor_cols) if include_base_regressors else ''
         
+    
+    #----------------------------------------------------------------------------
     # add unit-specific linear trend if specified
-    if unit_col and trend_col:
-        trend_term = f'{unit_col}[{trend_col}]'
-        regressors = f'{regressors} + {trend_term}' if regressors else trend_term
+    #----------------------------------------------------------------------------
+    if add_linear_trend:
+        if unit_col and trend_col:
+            trend_term = f'{unit_col}[{trend_col}]'
+            regressors = f'{regressors} + {trend_term}' if regressors else trend_term
+        else:
+            raise ValueError('unit_col and trend_col must be provided to add a unit-specific linear trend.')
         
+    #----------------------------------------------------------------------------
+    # interaction terms
+    #----------------------------------------------------------------------------
+    
     # looping through regression columns and their interaction pairs in the interaction_dict
     # to validate interaction columns and build interaction terms for the formula syntax
     if interaction_dict:
@@ -647,9 +665,10 @@ def pyfixest_fit_FE(df, target_col, regressor_cols, fe_cols,
             elif pd.api.types.is_string_dtype(df[interact_col]):
                 raise ValueError(f'Interaction column "{interact_col}" is string type. '
                                 f'Convert to categorical codes for regression.')
-                
-
             
+            if not isinstance(reg_col, str) or not isinstance(interact_col, str):
+                raise ValueError(f'reg_col="{reg_col}", interact_col="{interact_col}". Both must be strings corresponding to column names in the dataframe.')
+           
             # adding interaction term to the formula syntax for pyfixest
             interaction_term = f'{reg_col}:{interact_col}'
             regressors = f'{regressors} + {interaction_term}' if regressors else interaction_term
@@ -658,22 +677,188 @@ def pyfixest_fit_FE(df, target_col, regressor_cols, fe_cols,
     if not regressors:
         raise ValueError('No regressors specified. Provide regressor_cols, '
                          'interaction_dict, or a unit-specific trend.')
-
+        
+    #----------------------------------------------------------------------------
     # fixed effects
+    #----------------------------------------------------------------------------
     fe = ' + '.join(fe_cols)
 
+    #----------------------------------------------------------------------------
     # formula syntax for pyfixest: "target ~ regressors | fe1 + fe2 + ... + feN"
+    #----------------------------------------------------------------------------
     formula = f"{target_col} ~ {regressors} | {fe}"
 
+    #----------------------------------------------------------------------------
+    # vcov
+    #----------------------------------------------------------------------------
+    
     # build vcov argument — bandwidth only applies to DK and NW
-    if vcov_method in ('driscoll-kraay', 'NW'):
-        vcov = {vcov_method: vcov_col, "bandwidth": bandwidth}
-    else:
+    if vcov_method not in ('DK', 'NW', 'CRV1'):
+        raise ValueError(f"Invalid vcov_method: {vcov_method}. Must be one of ('DK', 'NW', 'CRV1').")
+    
+    if vcov_method in ['DK', 'NW']:
+        if unit_col is None:
+           raise ValueError('unit_col is required for Driscoll-Kraay/Newey-West SE estimation.') 
+        
+        vcov = vcov_method
+    
+        # DK/NW requires numeric panel_id; encode unit_col to integer codes
+        _panel_int_col = '__panel_id_int__'
+        df[_panel_int_col] = pd.factorize(df[unit_col])[0]
+        
+        vcov_kwargs = {'time_id': vcov_col, 'panel_id': _panel_int_col, 'lag': bandwidth}
+
+
+    else:  # CRV1
+        if isinstance(vcov_col, list) and len(vcov_col) == 2:
+            vcov_col = vcov_col[0] + ' + ' + vcov_col[1]  # 2-way clustering syntax
+        
         vcov = {vcov_method: vcov_col}
 
+        vcov_kwargs = None
+
+    #----------------------------------------------------------------------------
     # model fitting
-    res = pf.feols(formula=formula, data=df, vcov=vcov)
+    #----------------------------------------------------------------------------
+    res = pf.feols(fml=formula, data=df, vcov=vcov, vcov_kwargs=vcov_kwargs)
 
     logger.info(f'Pyfixest model fitted. Formula: {formula} | vcov: {vcov}')
 
     return res
+
+
+def save_panel_model_results(
+        model,
+        model_name,
+        output_dir,
+        aquifer_state_shapefile=None,
+        aquifer_region_col='aquifer_region',
+        save_csv=True,
+        save_shapefile=False):
+    """
+    Save pyfixest panel regression results as CSV and/or shapefile.
+
+    Extracts the tidy coefficient table (estimate, SE, t-value, p-value,
+    95% CI) and model-level stats (R², R² within, RMSE, N) from a fitted
+    pyfixest model. Optionally joins region-specific coefficients to the
+    aquifer-state shapefile for spatial export.
+
+    Example
+    -------
+        save_panel_model_results(
+            model=rq1,
+            model_name='RQ1',
+            output_dir=PROJECT_ROOT / 'Results/panel_reg',
+            aquifer_state_shapefile=PROJECT_ROOT / 'Data_main/shapefiles/aquifer_state_units.shp',
+            aquifer_region_col='aquifer_region',
+            save_csv=True,
+            save_shapefile=True,
+        )
+
+    :param model: Fitted pyfixest model object returned by pyfixest_fit_FE().
+    :param model_name: Label used in the output filename and a 'model_name' column.
+    :param output_dir: Directory where output files are written.
+    :param aquifer_state_shapefile: Path to the aquifer-state polygon shapefile.
+        Required when save_shapefile=True.
+    :param aquifer_region_col: Column in the shapefile that holds aquifer_region
+        labels matching those embedded in coefficient names. Default: 'aquifer_region'.
+    :param save_csv: If True, save the full coefficient table as a CSV.
+        Default: True.
+    :param save_shapefile: If True, join region-specific coefficients to the
+        shapefile geometry and save as a .shp. Requires aquifer_state_shapefile.
+        Default: False.
+
+    :return: pd.DataFrame of the full coefficient table (all rows, no geometry).
+    """
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # -------------------------------------------------------------------------
+    # coefficient table
+    # -------------------------------------------------------------------------
+    coef_df = model.tidy().reset_index()
+    coef_df.insert(0, 'model_name', model_name)
+
+    # -------------------------------------------------------------------------
+    # parse coefficient names into (coef_type, aquifer_region, interaction_group)
+    #
+    # pattern 1 – trend            : "aquifer_region[year][T.HPA_NE]"
+    #                                  → coef_type='trend', aquifer_region='HPA_NE'
+    # pattern 2 – region interaction: "Precip_anomaly:aquifer_region[CP_WA]"
+    #                                  → coef_type='Precip_anomaly', aquifer_region='CP_WA'
+    # pattern 3 – group interaction : "Precip_anomaly:GW_or_conjunctive[T.0]"
+    #                                  → coef_type='Precip_anomaly', interaction_group='0'
+    # pattern 4 – base regressor   : "Precip_anomaly"
+    #                                  → coef_type='Precip_anomaly'
+    # -------------------------------------------------------------------------
+    coef_col = coef_df.columns[1]  # 'Coefficient' (second column after model_name)
+
+    trend_pat        = re.compile(rf'{re.escape(aquifer_region_col)}\[year\]\[T\.([^\]]+)\]')
+    region_pat       = re.compile(rf'(\w+):{re.escape(aquifer_region_col)}\[([^\]]+)\]')
+    group_pat        = re.compile(r'^([^:]+):[^[]+\[(?:T\.)?([^\]]+)\]$')
+
+    def _parse_coef(name):
+        # 1. trend term
+        m = trend_pat.search(name)
+        if m:
+            return 'trend', m.group(1), np.nan          # coef_type, aquifer_region, interaction_group
+
+        # 2. region-specific interaction (aquifer_region_col)
+        m = region_pat.search(name)
+        if m:
+            return m.group(1), m.group(2), np.nan       # coef_type, aquifer_region, interaction_group
+
+        # 3. generic group interaction  (any other VAR:COL[LEVEL])
+        m = group_pat.match(name)
+        if m:
+            return m.group(1), np.nan, m.group(2)       # coef_type, aquifer_region, interaction_group
+
+        # 4. base regressor or standalone term (no colon, no bracket)
+        if ':' not in name and '[' not in name:
+            return name, np.nan, np.nan
+
+        return np.nan, np.nan, np.nan
+
+    parsed = coef_df[coef_col].apply(
+        lambda x: pd.Series(_parse_coef(x), index=['coef_type', 'aquifer_region', 'interaction_group'])
+    )
+    coef_df = pd.concat([coef_df, parsed], axis=1)
+    
+    coef_df = coef_df.rename(columns={coef_col: 'model_term'})
+
+    # -------------------------------------------------------------------------
+    # save CSV
+    # -------------------------------------------------------------------------
+    if save_csv:
+        csv_path = output_dir / f'{model_name}_results.csv'
+        coef_df.to_csv(csv_path, index=False)
+        logger.info(f'Results CSV saved → {csv_path}')
+
+    # -------------------------------------------------------------------------
+    # save shapefile
+    # -------------------------------------------------------------------------
+    if save_shapefile:
+        if aquifer_state_shapefile is None:
+            raise ValueError('aquifer_state_shapefile must be provided when save_shapefile=True.')
+
+        gdf = gpd.read_file(aquifer_state_shapefile)[['State', 'AQ_code', 'AQ_State', 'AQ_Region', 'geometry']]
+
+        spatial_df = coef_df.dropna(subset=['aquifer_region'])  # drops a row if any value in this column has NaN
+
+        if spatial_df.empty:
+            logger.warning('No region-specific coefficients found — shapefile not saved.')
+
+        else:
+            spatial_gdf = spatial_df.merge(gdf, left_on='aquifer_region', right_on='AQ_Region', how='left')
+            spatial_gdf = gpd.GeoDataFrame(spatial_gdf, geometry='geometry')
+            
+            output_dir = output_dir / 'shapes'
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            shp_path = output_dir / f'{model_name}_results.shp'
+            
+            spatial_gdf.to_file(shp_path)
+            logger.info(f'Results shapefile saved → {shp_path}  |  rows: {len(spatial_gdf)}')
+
+    return coef_df
