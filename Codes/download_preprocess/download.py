@@ -704,6 +704,14 @@ class GEE_download:
 
         month_list = [m for m in range(month_range[0], month_range[1] + 1)]  # creating list of months
 
+        # In case of precip data, I am downloading monthly data for the previous year.
+        # These datasets are often needed to assess water year precipitation.
+        if data_name == 'PRISM_Precip':              
+        
+            year_list.insert(0, year_list[0] - 1)  # adding previous year to the beginning of the list
+        
+        
+        # Data downloading loop
         for year in year_list:  # first loop for year_list
             for month in month_list:
                 logger.info('---------------------------------------------------------------------------------')
@@ -740,9 +748,8 @@ class GEE_download:
                         monthly_img = ee.ImageCollection(data).select(band).filterDate(start_date, end_date). \
                             reduce(reducer).divide(3600).multiply(scale_factor).toFloat().rename(band). \
                             reproject(crs='EPSG:4326', scale=scale_meters)
-
+                    
                     else:
-
                         monthly_img = ee.ImageCollection(data).select(band).filterDate(start_date, end_date). \
                             reduce(reducer).multiply(scale_factor).toFloat().rename(band). \
                             reproject(crs='EPSG:4326', scale=scale_meters)
