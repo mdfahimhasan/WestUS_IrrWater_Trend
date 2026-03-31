@@ -903,3 +903,174 @@ def save_panel_model_results(
             logger.info(f'Results shapefile saved → {shp_path}  |  rows: {len(spatial_gdf)}')
 
     return coef_df
+
+
+def compute_IWU_from_panel_model(
+        panel_df,
+        results_csv,
+        predictor_config,
+        iwu_col='IWU_v1_mm',
+        unit_col='aquifer_region',
+        year_col='year',
+        month_col='month',
+        baseline_years=(1986, 2000),
+        output_dir=None,
+        model_name='RQ1'):
+    """
+    Compute the predictor-driven component of IWU from region-specific regression
+    coefficients saved in a results CSV.
+
+    For each predictor, the function:
+      1. Optionally computes an anomaly from a raw column relative to the baseline mean.
+      2. Looks up the region-specific coefficient from the results CSV.
+      3. Computes: IWU_<predictor> = beta_<predictor> * predictor_value
+
+    The total predictor-driven IWU is the sum across all predictors:
+      IWU_predicted_total = sum(IWU_<predictor> for all predictors)
+
+    predictor_config format
+    -----------------------
+    A dict where each key is the coef_type name as it appears in the results CSV
+    (i.e., the column name used in the regression), and the value is either:
+
+      - A raw column name (str): anomaly is computed as (raw_col - baseline_mean).
+        Use this for variables like Precip_mm or Tmean_C that need detrending.
+
+      - None: the column already exists in panel_df under the same name as the key
+        and is used directly without anomaly computation.
+        Use this for pre-computed variables like WinterPrecip or WTD.
+
+    Examples:
+        # Climate only (anomalies computed from raw cols):
+        predictor_config = {
+            'Precip_anomaly' : 'Precip_mm',   # key=coef_type, value=raw col
+            'Tmean_anomaly'  : 'Tmean_C',
+        }
+
+        # Add WinterPrecip (already in panel, used as-is):
+        predictor_config = {
+            'Precip_anomaly' : 'Precip_mm',
+            'Tmean_anomaly'  : 'Tmean_C',
+            'WinterPrecip'   : None,           # used directly from panel_df
+        }
+
+    Output columns
+    --------------
+    For each predictor key K in predictor_config:
+      - 'IWU_{K}' : predictor-driven IWU component
+    Plus:
+      - 'IWU_predicted_total' : sum of all components
+
+    :param panel_df:          Monthly panel DataFrame.
+    :param results_csv:       Path to model results CSV with region-specific coefficients.
+    :param predictor_config:  Dict mapping coef_type → raw_col or None (see above).
+    :param iwu_col:           Observed IWU column to carry through. Default: 'IWU_v1_mm'.
+    :param unit_col:          Entity/region column. Default: 'aquifer_region'.
+    :param year_col:          Year column. Default: 'year'.
+    :param month_col:         Month column. Default: 'month'.
+    :param baseline_years:    Tuple (start, end) for anomaly baseline. Default: (1986, 2000).
+    :param output_dir:        Directory to save CSVs. If None, not saved.
+    :param model_name:        Prefix for output filenames. Default: 'RQ1'.
+
+    :return: Tuple (monthly_df, annual_df).
+             monthly_df — one row per (region, year, month)
+             annual_df  — seasonal mean per (region, year)
+    """
+    coef_df = pd.read_csv(results_csv)
+    df      = panel_df.copy()
+    base    = df[df[year_col].between(*baseline_years)]
+
+    component_cols = []
+    anomaly_cols   = []
+
+    for coef_type, raw_col in predictor_config.items():
+        if coef_type not in coef_df['coef_type'].values:
+            raise ValueError(f'coef_type "{coef_type}" not found in results CSV "coef_type" column.\n' 
+                             f'Available types: {coef_df["coef_type"].unique()}')
+       
+        # --- get region-specific coefficients for this predictor ---
+        coef_series = (coef_df[coef_df['coef_type'] == coef_type]
+                       .set_index(unit_col)['Estimate'])
+
+        missing = set(df[unit_col].unique()) - set(coef_series.index)
+        
+        if missing:
+            logger.warning(f'Regions missing coefficient for "{coef_type}": {missing}')
+
+        # --- get predictor values ---
+        if raw_col is not None:
+            # compute anomaly from raw column relative to baseline mean
+            clim = (base.groupby([unit_col, month_col])[raw_col]
+                    .mean()
+                    .rename(f'_clim_{coef_type}'))
+            df = df.merge(clim, on=[unit_col, month_col])
+            predictor_values = df[raw_col] - df[f'_clim_{coef_type}']
+            
+            col_name = coef_type if '_anomaly' in coef_type else f'{coef_type}_anomaly'
+            df[col_name] = predictor_values
+            anomaly_cols.append(col_name)
+        
+        else:
+            # use the column directly from panel_df (already transformed)
+            if coef_type not in df.columns:
+                raise ValueError(
+                    f'predictor_config: raw_col is None for "{coef_type}" but '
+                    f'column "{coef_type}" not found in panel_df.'
+                )
+            predictor_values = df[coef_type]
+
+        # --- compute component ---
+        beta_col      = f'_beta_{coef_type}'
+        component_col = f'IWU_{coef_type.replace("_anomaly", "")}'
+
+        df[beta_col]      = df[unit_col].map(coef_series)
+        df[component_col] = df[beta_col] * predictor_values
+        component_cols.append(component_col)
+
+    # total predicted IWU (sum of all components)
+    df['IWU_predicted_total'] = df[component_cols].sum(axis=1)
+
+    # -------------------------------------------------------------------------
+    # build output DataFrames — drop internal helper cols
+    # -------------------------------------------------------------------------
+    drop_cols = [c for c in df.columns if c.startswith('_')]
+    df = df.drop(columns=drop_cols)
+
+    raw_cols = [v for v in predictor_config.values() if v is not None]
+
+    carry_cols = [unit_col, year_col, month_col]
+    for extra in ['aquifer', 'state']:
+        if extra in df.columns:
+            carry_cols.append(extra)
+    carry_cols += raw_cols + anomaly_cols + [iwu_col] + component_cols + ['IWU_predicted_total']
+    carry_cols  = list(dict.fromkeys(carry_cols))  # deduplicate, preserve order
+
+    monthly_df = df[[c for c in carry_cols if c in df.columns]].copy()
+
+    agg_cols   = anomaly_cols + [iwu_col] + component_cols + ['IWU_predicted_total']
+    group_cols = [unit_col, year_col]
+    for extra in ['aquifer', 'state']:
+        if extra in df.columns:
+            group_cols.append(extra)
+
+    annual_df = (df.groupby(group_cols)[agg_cols]
+                 .mean()
+                 .reset_index())
+
+    # -------------------------------------------------------------------------
+    # save
+    # -------------------------------------------------------------------------
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        monthly_path = output_dir / f'{model_name}_predicted_IWU_monthly.csv'
+        annual_path  = output_dir / f'{model_name}_predicted_IWU_annual.csv'
+
+        monthly_df.to_csv(monthly_path, index=False)
+        annual_df.to_csv(annual_path,   index=False)
+
+        logger.info(f'Monthly predicted IWU saved → {monthly_path}  |  rows: {len(monthly_df)}')
+        logger.info(f'Annual  predicted IWU saved → {annual_path}   |  rows: {len(annual_df)}')
+
+    return monthly_df, annual_df
