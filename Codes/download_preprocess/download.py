@@ -5,6 +5,9 @@
 
 import ee
 import sys
+import os
+import json
+import globus_sdk
 import logging
 import numpy as np
 import rasterio
@@ -1287,3 +1290,154 @@ def download_USDA_SCS_Peff_pycropwat(years_list, output_dir, scale_meters, ee_pr
                                        resolution=res_2km)
 
     logger.info(f"Completed downloading and clipping rasters")
+    
+# ──────────────────────────────────────────────────────────────── Daily Streamflow data download from GLOBUS ────────────────────────────────────────────────────────────────
+# source : 
+'''
+https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
+https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
+
+
+'''
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+# ── Config ────────────────────────────────────────────────────────────────
+CLIENT_ID      = 'e344b16b-0e18-456b-bf32-449ab168aa35'
+SOURCE_EP      = "57618e0a-2c99-45ff-9694-24141b92fa17"
+DEST_EP        = "b16d3722-375a-11f1-bddf-0afffe4617ab"
+WESTERN_PREFIX = ("10", "11", "12", "13", "14", "15", "16", "17", "18")
+
+# ~/.globus_tokens.json works on both Mac and Linux
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), "globus_tokens.json")
+
+# ── Token helpers ─────────────────────────────────────────────────────────
+def globus_load_tokens():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE) as f:
+            return json.load(f)
+    return {}
+
+def globus_save_tokens(token_dict):
+    with open(TOKEN_FILE, "w") as f:
+        json.dump(token_dict, f, indent=2)
+    print("  [token] saved/refreshed.\n")
+
+def globus_on_refresh(token_response):
+    """Auto-called by RefreshTokenAuthorizer after each silent refresh."""
+    t = token_response.by_resource_server.get("transfer.api.globus.org", {})
+    if t:
+        existing = globus_load_tokens()
+        globus_save_tokens({
+            "access_token"     : t["access_token"],
+            
+            # keep old refresh_token if server doesn't rotate it
+            "refresh_token"    : t.get("refresh_token", existing.get("refresh_token")),
+            "expires_at_seconds": t["expires_at_seconds"],
+        })
+
+# ── Auth ──────────────────────────────────────────────────────────────────
+def globus_get_transfer_client():
+    """
+    Returns an authenticated TransferClient.
+    - First run : opens OAuth URL (one-time), saves tokens to disk.
+    - Later runs: loads tokens from disk, refreshes silently if expired.
+    """
+    
+    # creates a Globus app identity using the Client ID
+    auth_client = globus_sdk.NativeAppAuthClient(CLIENT_ID)   
+    
+    # check if globus_token.json already exists, if yes, load the tokens from the file. If not, it will return an empty dictionary.
+    saved = globus_load_tokens()
+
+    # If the saved tokens contain a refresh token, it is used to create a RefreshTokenAuthorizer. 
+    # This authorizer will automatically refresh the access token when it expires, using the refresh token. 
+    # The on_refresh callback is set to globus_on_refresh, which will save the new tokens to disk after each refresh.
+    if saved.get("refresh_token"):
+        print("[auth] Using saved tokens (auto-refresh on expiry).")
+        
+        authorizer = globus_sdk.RefreshTokenAuthorizer(
+            saved["refresh_token"],
+            auth_client,
+            access_token=saved.get("access_token"),
+            expires_at=saved.get("expires_at_seconds"),
+            on_refresh=globus_on_refresh,          # silently saves refreshed tokens
+        )
+    
+    # This is the one time manual setup flow. It initiates the OAuth2 flow, prompting the user to visit a URL and paste back an auth code.
+    else:
+        # ── First-time only ──────────────────────────────────────────────
+        print("[auth] First-time setup — completing OAuth flow...")
+        
+        auth_client.oauth2_start_flow(
+            requested_scopes="urn:globus:auth:scope:transfer.api.globus.org:all",
+            refresh_tokens=True,             # <-- key: request long-lived refresh token
+        )
+        
+        url = auth_client.oauth2_get_authorize_url()
+        print(f"\nOpen this URL in your browser:\n{url}\n")
+        auth_code = input("Paste the auth code: ").strip()
+
+        token_response = auth_client.oauth2_exchange_code_for_tokens(auth_code)
+        t = token_response.by_resource_server["transfer.api.globus.org"]
+
+        globus_save_tokens({
+            "access_token"     : t["access_token"],
+            "refresh_token"    : t["refresh_token"],
+            "expires_at_seconds": t["expires_at_seconds"],
+        })
+
+        authorizer = globus_sdk.RefreshTokenAuthorizer(
+            t["refresh_token"],
+            auth_client,
+            access_token=t["access_token"],
+            expires_at=t["expires_at_seconds"],
+            on_refresh=globus_on_refresh,
+        )
+
+    return globus_sdk.TransferClient(authorizer=authorizer)
+
+# ── Data download ──────────────────────────────────────────────────────────────
+def download_data_western_us_GLOBUS(years, output_dir):
+    
+    tc = globus_get_transfer_client()
+
+    for year in years:
+        print(f"\n[{year}] Building transfer task...")
+    
+        tdata = globus_sdk.TransferData(
+            source_endpoint=SOURCE_EP,
+            destination_endpoint=DEST_EP,
+            label=f"Dayflow_WestUS_{year}",
+            sync_level="checksum",           # skips already-downloaded files
+        )
+
+        src_path = (
+            f"/gen101/world-shared/doi-data/OLCF/202312/"
+            f"10.13139_OLCF_2222888/VIC4_RAPID_PRISMAORC2019/{year}/"   # source - https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
+        )
+        dest_path = f"{output_dir}/{year}/"
+        
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+
+        # Filter to western US HUC8s only
+        n_added = 0
+        for entry in tc.operation_ls(SOURCE_EP, path=src_path):
+            fname = entry["name"]
+            
+            try:
+                huc8_id = fname.split("_")[2]          # e.g. "14010001C"
+                if huc8_id[:2] in WESTERN_PREFIX and huc8_id[-1] == "C":  # western US and USGS streamflow data assimiated files only
+                    tdata.add_item(src_path + fname, dest_path + fname)
+                    n_added += 1
+            
+            except IndexError:
+                continue
+
+        if n_added == 0:
+            print(f"  [!] No western US files found for {year}, skipping.")
+            continue
+
+        result = tc.submit_transfer(tdata)
+        print(f"  Submitted {n_added} files — task_id: {result['task_id']}")
