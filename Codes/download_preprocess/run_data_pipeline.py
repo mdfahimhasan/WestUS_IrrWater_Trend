@@ -3,6 +3,7 @@
 # Colorado State university
 # Fahim.Hasan@colostate.edu
 
+import os
 import sys
 from pathlib import Path
 from download import download_all_gee_data, download_data_western_us_GLOBUS
@@ -41,8 +42,13 @@ def run_download_pipeline(ee_project, skip_gee_data_download, skip_gee_openET_do
     if not skip_globus_steamflow_download:
         year_list = [i for i in year_list if (i <= 2019) and (i >= 1981)]     # streamflow data is available until year 2022
         
+        # configuring the download directory
+        home = os.path.expanduser("~")
+        rel_path = str(download_dir).replace(home, '~') 
+        mod_download_dir = rel_path + "/Dayflow/raw"
+        
         download_data_western_us_GLOBUS(years=year_list, 
-                                        output_dir=str(download_dir) + "/Dayflow/raw")
+                                        output_dir=mod_download_dir)
 
 
 # The `if __name__ == "__main__":` guard is required when using Python's multiprocessing module
@@ -66,11 +72,12 @@ if __name__ == '__main__':
         'gee_grid_shape_for30m_IrrMapper': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_IrrMapper.shp',
         'gee_grid_shape_for30m_LANID': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
         'years': [
-                   1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
-                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
-                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
-                   2018, 2019, 2020, 2021, 2022, 2023, 2024
+                   1986, 
+                #    1987, 1988, 1989, 1990, 1991, 1992, 1993,
+                #    1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
+                #    2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                #    2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
+                #    2018, 2019, 2020, 2021, 2022, 2023, 2024
                 ],
         'month_range': (1, 12),
 
