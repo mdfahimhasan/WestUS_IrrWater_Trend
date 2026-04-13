@@ -1362,12 +1362,35 @@ def reclassify_GW_use_perc_rasters(GW_use_perc_dir, westUS_ROI,
             dst.write(gw_perc_arr, 1)
 
         ################################################################################################################
-        # # creating a binary raster
-        # >=70% GW use will be 1 (groundwater-dominated), others will be 0 (conjunctive use)
-        gw_perc_binary = np.where(gw_perc_arr >= 70, 1, 0).squeeze()
+        # # # creating a binary raster
+        # # >=70% GW use will be 1 (groundwater-dominated), others will be 0 (conjunctive use)
+        # gw_perc_binary = np.where(gw_perc_arr >= 70, 1, 0).squeeze()
+
+        # # save the binary classified raster
+        # binary_raster = os.path.join(output_dir, 'GW_use_ROI_binary.tif')
+        # with rio.open(
+        #         binary_raster,
+        #         'w',
+        #         driver='GTiff',
+        #         height=gw_perc_binary.shape[0],
+        #         width=gw_perc_binary.shape[1],
+        #         count=1,
+        #         dtype=gw_perc_binary.dtype,
+        #         crs=raster_file.crs,
+        #         transform=mask_transform,
+        #         nodata=-9999
+        # ) as dst:
+        #     dst.write(gw_perc_binary, 1)
+        
+        # # creating a classification raster
+        # < 30% GW use will be 0 (surface water)
+        # 30-70% GW use will be 1 (conjunctive/mixed use)
+        # >=70% GW use will be 2 (groundwater-dominated)
+        gw_perc_binary = np.where(gw_perc_arr >= 70, 2, np.where(gw_perc_arr >= 30, 1, 0)).squeeze()
+        gw_perc_binary = np.where(gw_perc_arr == -9999, -9999, gw_perc_binary)  # preserve nodata values
 
         # save the binary classified raster
-        binary_raster = os.path.join(output_dir, 'GW_use_ROI_binary.tif')
+        binary_raster = os.path.join(output_dir, 'Water_source_classification.tif')
         with rio.open(
                 binary_raster,
                 'w',
@@ -1402,7 +1425,7 @@ def run_all_preprocessing(years_list,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
                           skip_calculate_growing_season_IWU=False,
-                          skip_create_GW_use_binary_rasters=False
+                          skip_create_water_source_rasters=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1518,7 +1541,7 @@ def run_all_preprocessing(years_list,
     # reclassify GW use percentage rasters into binary classification (GW-dominated vs. conjunctive use)
     reclassify_GW_use_perc_rasters(GW_use_perc_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%',
                                    westUS_ROI=WestUS_shape,
-                                   output_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/GW_use_binary',
-                                   skip_processing=skip_create_GW_use_binary_rasters)
+                                   output_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/Water_source_classification',
+                                   skip_processing=skip_create_water_source_rasters)
 
     
