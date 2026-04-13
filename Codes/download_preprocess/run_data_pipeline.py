@@ -46,7 +46,7 @@ def run_download_pipeline(ee_project, skip_gee_data_download, skip_gee_openET_do
         home = os.path.expanduser("~")
         rel_path = str(download_dir).replace(home, '~') 
         mod_download_dir = rel_path + "/Dayflow/raw"
-        
+        print(mod_download_dir)
         download_data_western_us_GLOBUS(years=year_list, 
                                         output_dir=mod_download_dir)
 
