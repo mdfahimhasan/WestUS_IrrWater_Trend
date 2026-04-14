@@ -1305,7 +1305,10 @@ https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
 # ── Config ────────────────────────────────────────────────────────────────
 CLIENT_ID      = 'e344b16b-0e18-456b-bf32-449ab168aa35'
 SOURCE_EP      = "57618e0a-2c99-45ff-9694-24141b92fa17"
-DEST_EP        = "b16d3722-375a-11f1-bddf-0afffe4617ab"
+MAC_DEST_EP        = "b16d3722-375a-11f1-bddf-0afffe4617ab"
+LINUX_DEST_EP     = '2bb4c984-3797-11f1-bc5a-02535127e3d7'
+DEST_EP           = MAC_DEST_EP if sys.platform == "darwin" else LINUX_DEST_EP
+
 WESTERN_PREFIX = ("10", "11", "12", "13", "14", "15", "16", "17", "18")
 
 # ~/.globus_tokens.json works on both Mac and Linux
