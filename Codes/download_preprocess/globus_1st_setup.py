@@ -1,5 +1,35 @@
-import os
-import json
+# Author : Md Fahim Hasan
+# PhD Candidate
+# Colorado State university
+# Fahim.Hasan@colostate.edu
+
+
+'''
+This script is for the first-time setup of Globus authentication. Not needed for MAC as Globus can be automatically configured from the download.py script.
+
+However, particularly for linux servers, where jobs have to submitted, the authentication process needs to be done separately.
+
+Run this script only once for the first-time setup of Globus authenticatiom. Follow the steps outlined below. 
+
+Steps:
+------------------------------------------
+> Connect to the linux server using ssh >
+
+> Browse (cd) to the directory where this .py file is located
+
+> Run this script without submitting a job 
+
+> copy paste the generated link to MAC or windows internet browser
+
+> copy the code from the browser and paste it on linux terminal
+
+
+**** After the setup is complete, a 'json' file will be created in the same directory where this .py file is located. 
+This file contains the authentication tokens and other information. 
+The download.py script will use this file to authenticate and download data from Globus.
+'''
+
+
 import sys
 import globus_sdk
 from pathlib import Path

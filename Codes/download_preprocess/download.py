@@ -1418,8 +1418,9 @@ def download_data_western_us_GLOBUS(years, output_dir):
         )
         dest_path = f"{output_dir}/{year}/"
         
-        if not os.path.exists(dest_path):
-            os.makedirs(dest_path)
+        local_dest = os.path.expanduser(dest_path)
+        if not os.path.exists(local_dest):
+            os.makedirs(local_dest)
 
         # Filter to western US HUC8s only
         n_added = 0
