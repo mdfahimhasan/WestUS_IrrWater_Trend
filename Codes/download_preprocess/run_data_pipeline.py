@@ -72,8 +72,10 @@ if __name__ == '__main__':
         'gee_grid_shape_for30m_IrrMapper': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_IrrMapper.shp',
         'gee_grid_shape_for30m_LANID': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
         'years': [
-                   1986, 
-                #    1987, 1988, 1989, 1990, 1991, 1992, 1993,
+                #    1986, 
+                #    1987, 1988, 
+                   1989, 1990, 
+                #    1991, 1992, 1993,
                 #    1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
                 #    2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
                 #    2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
@@ -98,7 +100,7 @@ if __name__ == '__main__':
 
         'skip_gee_openET_download': True,               ###########################################
         
-        'skip_globus_steamflow_download': False,          ###########################################
+        'skip_globus_steamflow_download': True,         ###########################################
 
         'use_cpu_while_multidownloading': 5             ###### fixed for Linux. Adjust it to 5 (for a 16 core cpu) in windows
     }

@@ -1407,10 +1407,10 @@ def download_data_western_us_GLOBUS(years, output_dir):
     
     if sys.platform != "darwin":
         raise RuntimeError(
-            "Globus download is currently configured for macOS only. "
-            "It may work on a Linux desktop with Globus Connect Personal installed, "
-            "but has not been configured or tested for Linux yet. "
-            "Run this function from your Mac instead."
+            "This function only works on Mac with a GUI (Globus Connect Personal). "
+            "It does NOT work on Linux CLI. "
+            "For Linux CLI download, use globus_download_Dayflow_LINUX.sh and the" 
+            "associated setup in globusCLI_setup_LINUX_HPC.txt."
         )
 
     tc = globus_get_transfer_client()
