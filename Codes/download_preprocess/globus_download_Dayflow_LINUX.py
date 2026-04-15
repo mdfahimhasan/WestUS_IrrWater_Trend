@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import tempfile
 
 # ============================================================
 # CONFIGURATION
@@ -16,6 +17,9 @@ YEARS      = [
               2006, 2007, 2008, 2009, 2010,
               2011, 2012, 2013, 2014, 2015,
               2016, 2017, 2018, 2019]
+
+# HUC2 prefixes covering all 17 western US states
+WESTERN_PREFIX = ("09", "10", "11", "12", "13", "14", "15", "16", "17", "18")
 
 # ============================================================
 # HELPER: run a globus CLI command and return output
@@ -37,30 +41,62 @@ for year in YEARS:
     src_path  = (f"/gen101/world-shared/doi-data/OLCF/202312/"
                  f"10.13139_OLCF_2222888/VIC4_RAPID_PRISMAORC2019/{year}/")
     dest_path = f"{OUTPUT_DIR}/{year}/"
-    
+
     if not os.path.exists(dest_path):
         os.makedirs(dest_path)
 
     print(f"\n{'='*50}")
-    print(f"Submitting transfer for year: {year}")
-    print(f"  From: {src_path}")
-    print(f"  To  : {dest_path}")
+    print(f"[{year}] Listing source files and filtering to western US HUC8s...")
 
-    # Submit
-    task_id = run_globus([
-        "transfer",
-        "--recursive",
-        "--label", f"ORNL_VIC4_{year}",
-        "--notify", "off",
+    # List all files in the source directory for this year
+    ls_output = run_globus([
+        "ls",
         f"{SOURCE_EP}:{src_path}",
-        f"{DEST_EP}:{dest_path}",
-        "--jmespath", "task_id",
         "--format=UNIX"
     ])
+
+    # Filter to western US HUC8s (same logic as Mac/download.py)
+    batch_lines = []
+    for fname in ls_output.splitlines():
+        fname = fname.strip()
+        if not fname:
+            continue
+        try:
+            huc8_id = fname.split("_")[2]          # e.g. "14010001C" from "flow_nat_14010001C_1986.nc"
+            if huc8_id[:2] in WESTERN_PREFIX:
+                batch_lines.append(f"{src_path}{fname} {dest_path}{fname}")
+        except IndexError:
+            continue
+
+    if not batch_lines:
+        print(f"  [!] No western US files found for {year}, skipping.")
+        continue
+
+    print(f"  Submitting {len(batch_lines)} files...")
+
+    # Write batch file and submit
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as bf:
+        bf.write("\n".join(batch_lines))
+        batch_file = bf.name
+
+    try:
+        task_id = run_globus([
+            "transfer",
+            "--batch", batch_file,
+            "--label", f"Dayflow_WestUS_{year}",
+            "--sync-level", "checksum",
+            "--notify", "off",
+            SOURCE_EP, DEST_EP,
+            "--jmespath", "task_id",
+            "--format=UNIX"
+        ])
+    finally:
+        os.unlink(batch_file)
+
     print(f"  Task ID: {task_id}")
 
     # Wait for THIS year to finish before moving on
-    print(f"  Waiting for {year} to complete...")
+    print(f"  Waiting for {year} transfer to complete...")
     run_globus(["task", "wait", task_id, "--polling-interval", "60"])
 
     # Check final status
@@ -69,7 +105,7 @@ for year in YEARS:
         "--jmespath", "status",
         "--format=UNIX"
     ])
-    print(f"  Year {year} finished with status: {status}")
+    print(f"  [{year}] Transfer {status}")
 
     if status != "SUCCEEDED":
         print(f"  ERROR: Transfer for {year} failed! Stopping.")
