@@ -7,7 +7,9 @@ import sys
 SOURCE_EP  = "57618e0a-2c99-45ff-9694-24141b92fa17"   # ORNL source
 DEST_EP    = "2bb4c984-3797-11f1-bc5a-02535127e3d7"   # Linux endpoint
 OUTPUT_DIR = "../../Data_main/rasters/Dayflow/raw"
-YEARS      = [1986, 1987, 1988, 1989, 1990,
+YEARS      = [
+            #   1986, 1987, 1988, 1989, 
+            1990,
               1991, 1992, 1993, 1994, 1995,
               1996, 1997, 1998, 1999, 2000,
               2001, 2002, 2003, 2004, 2005,
@@ -46,7 +48,7 @@ for year in YEARS:
         "transfer",
         "--recursive",
         "--label", f"ORNL_VIC4_{year}",
-        "--no-notify",
+        "--notify", "off",
         f"{SOURCE_EP}:{src_path}",
         f"{DEST_EP}:{dest_path}",
         "--jmespath", "task_id",
