@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import os
 
 # ============================================================
 # CONFIGURATION
@@ -37,6 +38,9 @@ for year in YEARS:
     src_path  = (f"/gen101/world-shared/doi-data/OLCF/202312/"
                  f"10.13139_OLCF_2222888/VIC4_RAPID_PRISMAORC2019/{year}/")
     dest_path = f"{OUTPUT_DIR}/{year}/"
+    
+    if not os.path.exists(dest_path):
+        os.makedirs(dest_path)
 
     print(f"\n{'='*50}")
     print(f"Submitting transfer for year: {year}")

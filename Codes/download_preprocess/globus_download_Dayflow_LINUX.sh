@@ -18,7 +18,7 @@ sleep 15
 export PATH="$HOME/.local/bin:$PATH"
 
 # Run the Python transfer script
-python globus_download_LINUX.py
+python globus_download_Dayflow_LINUX.py
 
 # Stop Globus Connect Personal when done
 kill $GCP_PID
