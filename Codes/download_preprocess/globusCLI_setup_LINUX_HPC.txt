@@ -10,6 +10,7 @@ mv globusconnectpersonal-* ~/globusconnectpersonal
 ~/globusconnectpersonal/globusconnectpersonal -setup
 
 # 3. Log in to Globus (only needed once — gives you a URL to paste in browser)
+# NOTE: globus-cli manages tokens automatically in ~/.globus/ — no token file needed in the project
 globus login
 
 # 4. Verify you can see the SOURCE data on ORNL's endpoint

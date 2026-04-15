@@ -1296,8 +1296,6 @@ def download_USDA_SCS_Peff_pycropwat(years_list, output_dir, scale_meters, ee_pr
 '''
 https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
 https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
-
-
 '''
 # ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -1305,9 +1303,7 @@ https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
 # ── Config ────────────────────────────────────────────────────────────────
 CLIENT_ID      = 'e344b16b-0e18-456b-bf32-449ab168aa35'
 SOURCE_EP      = "57618e0a-2c99-45ff-9694-24141b92fa17"
-MAC_DEST_EP        = "b16d3722-375a-11f1-bddf-0afffe4617ab"
-LINUX_DEST_EP     = '2bb4c984-3797-11f1-bc5a-02535127e3d7'
-DEST_EP           = MAC_DEST_EP if sys.platform == "darwin" else LINUX_DEST_EP
+DEST_EP = "b16d3722-375a-11f1-bddf-0afffe4617ab"  # Mac only
 
 WESTERN_PREFIX = ("10", "11", "12", "13", "14", "15", "16", "17", "18")
 
@@ -1329,6 +1325,7 @@ def globus_save_tokens(token_dict):
 def globus_on_refresh(token_response):
     """Auto-called by RefreshTokenAuthorizer after each silent refresh."""
     t = token_response.by_resource_server.get("transfer.api.globus.org", {})
+    
     if t:
         existing = globus_load_tokens()
         globus_save_tokens({
@@ -1402,7 +1399,20 @@ def globus_get_transfer_client():
 
 # ── Data download ──────────────────────────────────────────────────────────────
 def download_data_western_us_GLOBUS(years, output_dir):
+    '''Download western US streamflow data from GLOBUS.
     
+    https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
+    https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
+    '''
+    
+    if sys.platform != "darwin":
+        raise RuntimeError(
+            "Globus download is currently configured for macOS only. "
+            "It may work on a Linux desktop with Globus Connect Personal installed, "
+            "but has not been configured or tested for Linux yet. "
+            "Run this function from your Mac instead."
+        )
+
     tc = globus_get_transfer_client()
 
     for year in years:
@@ -1443,5 +1453,22 @@ def download_data_western_us_GLOBUS(years, output_dir):
             print(f"  [!] No western US files found for {year}, skipping.")
             continue
 
-        result = tc.submit_transfer(tdata)
-        print(f"  Submitted {n_added} files — task_id: {result['task_id']}")
+        result  = tc.submit_transfer(tdata)
+        task_id = result['task_id']
+        print(f"  Submitted {n_added} files — task_id: {task_id}")
+
+        # Wait for this year's transfer to complete before moving to the next year.
+        # polling_interval: check status every 120 seconds
+        # timeout: give up after 24 hours (86400 seconds) — adjust if needed
+        print(f"  Waiting for {year} transfer to complete...")
+        completed = tc.task_wait(task_id, timeout=86400, polling_interval=120)
+
+        if completed:
+            task_info = tc.get_task(task_id)
+            status    = task_info['status']           # 'SUCCEEDED' or 'FAILED'
+            print(f"  [{year}] Transfer {status} — {task_info['files_transferred']} files transferred.")
+            if status == 'FAILED':
+                print(f"  [{year}] Error: {task_info.get('fatal_error', 'unknown error')} — stopping.")
+                break
+        else:
+            print(f"  [{year}] Transfer timed out after 24 hours — stopping.")
