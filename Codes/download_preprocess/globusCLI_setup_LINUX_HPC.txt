@@ -1,0 +1,30 @@
+## Steps to do or check before starting Globus download on LINUX Terminal
+
+# 1. Install Globus CLI on the HPC (only needed once)
+pip install --user globus-cli
+
+# 2. Install Globus Connect Personal on the HPC (only needed once)
+wget https://downloads.globus.org/globus-connect-personal/linux/stable/globusconnectpersonal-latest.tgz
+tar xzf globusconnectpersonal-latest.tgz
+mv globusconnectpersonal-* ~/globusconnectpersonal
+~/globusconnectpersonal/globusconnectpersonal -setup
+
+# 3. Log in to Globus (only needed once — gives you a URL to paste in browser)
+globus login
+
+# 4. Verify you can see the SOURCE data on ORNL's endpoint
+globus ls "57618e0a-2c99-45ff-9694-24141b92fa17:/gen101/world-shared/doi-data/OLCF/202312/"
+
+# 5. Navigate to your destination folder on the HPC
+cd ~/WestUS_IWU_trend/Data_main/rasters/Dayflow/raw/
+
+# 6. Change directory to the globusconnectpersonal
+# Then, start Globus Connect Personal in the background
+# This spins up the endpoint and connects it to Globus
+~/globusconnectpersonal/globusconnectpersonal -start &
+
+# 7. Wait a moment, then re-test the Linux endpoint — SUCCESS
+globus ls "2bb4c984-3797-11f1-bc5a-02535127e3d7:./"
+
+# 8. Check Globus status
+~/globusconnectpersonal/globusconnectpersonal -status

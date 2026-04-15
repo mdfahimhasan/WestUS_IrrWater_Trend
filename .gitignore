@@ -66,6 +66,9 @@ __pycache__/
 *.sbx
 *.shp.xml
 
+# Exceptions — files to track despite matching ignore patterns above
+!Codes/download_preprocess/globusCLI_setup_LINUX_HPC.txt
+
 # Aux files
 *.aux.xmlData_main/panel_data/panel_data_monthly.csv
 QGIS_maps/
