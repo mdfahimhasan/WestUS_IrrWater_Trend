@@ -7,7 +7,7 @@ import os
 # ============================================================
 SOURCE_EP  = "57618e0a-2c99-45ff-9694-24141b92fa17"   # ORNL source
 DEST_EP    = "2bb4c984-3797-11f1-bc5a-02535127e3d7"   # Linux endpoint
-OUTPUT_DIR = "../../Data_main/rasters/Dayflow/raw"
+OUTPUT_DIR = "/home/fahimcsu/WestUS_IWU_trend/Data_main/rasters/Dayflow/raw"
 YEARS      = [
             #   1986, 1987, 1988, 1989, 
             1990,
