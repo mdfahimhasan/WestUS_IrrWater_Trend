@@ -7,9 +7,12 @@ import ee
 import sys
 import os
 import json
+import shutil
 import globus_sdk
 import logging
 import numpy as np
+import pandas as pd
+import xarray as xr
 import rasterio
 import geopandas as gpd
 from pathlib import Path
@@ -19,6 +22,7 @@ from dask.diagnostics import ProgressBar
 from typing import List, Tuple, Optional
 from rasterio.transform import from_bounds
 from pycropwat import EffectivePrecipitation
+from pynhd import WaterData
 
 # Project root directory (works regardless of cwd)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -1300,12 +1304,135 @@ https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
 # ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+# ── Outlet cache helpers ───────────────────────────────────────────────────
+def dayflow_load_outlet_cache(cache_path: str) -> dict:
+    """Load cached outlet COMIDs from disk, or return empty dict."""
+    if os.path.exists(cache_path):
+        df = pd.read_csv(cache_path, dtype={'HUC8': str}).drop_duplicates(subset='HUC8')
+        return df.set_index('HUC8').to_dict(orient='index')
+    return {}
+
+
+def dayflow_save_outlet_cache(cache: dict, cache_path: str):
+    """Persist the outlet cache dict to CSV."""
+    pd.DataFrame.from_dict(cache, orient='index').to_csv(cache_path, index_label='HUC8')
+
+
+def dayflow_find_outlet_comid(ds: xr.Dataset):
+    """Return (outlet_comid, totdasqkm) for the HUC8 represented in ds."""
+    wd = WaterData('nhdflowline_network')
+    comids = ds['COMID'].values.tolist()
+
+    # Query in chunks to avoid web service timeouts on large HUC8s
+    chunk_size = 500
+    chunks = [comids[i:i + chunk_size] for i in range(0, len(comids), chunk_size)]
+    flowlines = pd.concat([wd.byid('comid', chunk) for chunk in chunks], ignore_index=True)
+
+    outlet_row = flowlines.loc[flowlines['totdasqkm'].idxmax()]
+    return outlet_row['comid'], outlet_row['totdasqkm']
+
+
+def dayflow_extract_huc8_year(huc8: str, year: int, year_dir: str,
+                               outlet_cache: dict, cache_path: str) -> pd.DataFrame | None:
+    """Extract monthly outlet flow for one HUC8/year. Returns None if files missing or on error."""
+    n_files = list(Path(year_dir).glob(f"*{huc8}N*.nc"))
+    c_files = list(Path(year_dir).glob(f"*{huc8}C*.nc"))
+    # print(n_files, c_files)
+    if not n_files and not c_files:
+        return None
+
+    try:
+        # Identify outlet from cache or pynhd query
+        if huc8 not in outlet_cache:
+            ref_file = n_files[0] if n_files else c_files[0]
+
+            with xr.open_dataset(ref_file) as ds:
+                outlet_comid, totdasqkm = dayflow_find_outlet_comid(ds)
+
+            outlet_cache[huc8] = {'comid': outlet_comid, 'totdasqkm': totdasqkm}
+            dayflow_save_outlet_cache(outlet_cache, cache_path)
+
+        outlet_comid = outlet_cache[huc8]['comid']
+
+        if n_files:
+            with xr.open_dataset(n_files[0]) as ds:
+                months = ds['Time_mn'].values % 100
+                idx_arr = np.where(ds['COMID'].values == outlet_comid)[0]
+                if len(idx_arr) == 0:
+                    raise ValueError(f"Outlet COMID {outlet_comid} not found in N dataset")
+                n_sim_Q = ds['RAPID_mn_cfs'].isel(comid=idx_arr[0]).values
+        else:
+            n_sim_Q = np.full(12, np.nan)
+
+        if c_files:
+            with xr.open_dataset(c_files[0]) as ds:
+                months = ds['Time_mn'].values % 100
+                idx_arr = np.where(ds['COMID'].values == outlet_comid)[0]
+                if len(idx_arr) == 0:
+                    raise ValueError(f"Outlet COMID {outlet_comid} not found in C dataset")
+                c_sim_Q = ds['RAPID_mn_cfs'].isel(comid=idx_arr[0]).values
+        else:
+            c_sim_Q = np.full(12, np.nan)
+
+    except Exception as e:
+        print(f"  WARNING: Skipping HUC8 {huc8} year {year} — {e}")
+        return None
+
+    return pd.DataFrame({
+        'HUC8': huc8,
+        'year': year,
+        'Month': months,
+        'Sim_Q_N': n_sim_Q,
+        'Sim_Q_C': c_sim_Q,
+        'Outlet_COMID': outlet_comid,
+        'Outlet_Drainage_Area': outlet_cache[huc8].get('totdasqkm', np.nan),
+    })
+
+
+def dayflow_process_year(year: int, raw_dir: str, huc8_shp: str,
+                          csv_out_dir: str, outlet_cache: dict, cache_path: str):
+    """
+    Extract monthly outlet flow for all HUC8s in a year, save to CSV,
+    then delete the raw NC folder to free disk space.
+    """
+    if '~' in raw_dir:
+        raw_dir = os.path.expanduser(raw_dir)
+
+    year_dir = os.path.join(raw_dir, str(year))
+    all_huc8s = gpd.read_file(huc8_shp)['HUC8'].astype(str).tolist()
+ 
+    rows = []
+    for huc8 in all_huc8s:
+        df = dayflow_extract_huc8_year(huc8, year, year_dir, outlet_cache, cache_path)
+        if df is not None:
+            rows.append(df)
+
+    if rows:
+        out_csv = os.path.join(csv_out_dir, f"Dayflow_outlet_flow_{year}.csv")
+        pd.concat(rows, ignore_index=True).to_csv(out_csv, index=False)
+        print(f"  [{year}] Saved processed CSV → {out_csv}")
+
+    shutil.rmtree(year_dir, ignore_errors=True)
+    print(f"  [{year}] Deleted raw folder: {year_dir}")
+
+
 # ── Config ────────────────────────────────────────────────────────────────
 CLIENT_ID      = 'e344b16b-0e18-456b-bf32-449ab168aa35'
 SOURCE_EP      = "57618e0a-2c99-45ff-9694-24141b92fa17"
 DEST_EP = "b16d3722-375a-11f1-bddf-0afffe4617ab"  # Mac only
 
-WESTERN_PREFIX = ("10", "11", "12", "13", "14", "15", "16", "17", "18")
+WESTERN_PREFIX = (
+    "09",   # Souris-Red-Rainy     — ND, MN
+    "10",   # Missouri             — MT, WY, CO, ND, SD, NE, KS, IA, MO
+    "11",   # Arkansas-White-Red   — CO, NM, KS, OK, AR, MO, TX
+    "12",   # Texas-Gulf           — TX, NM
+    "13",   # Rio Grande           — CO, NM, TX
+    "14",   # Upper Colorado       — WY, CO, UT, AZ, NM
+    "15",   # Lower Colorado       — AZ, NV, UT, CA, NM
+    "16",   # Great Basin          — NV, UT, ID, OR, CA
+    "17",   # Pacific Northwest    — WA, OR, ID, MT, WY
+    "18",   # California           — CA
+)
 
 # ~/.globus_tokens.json works on both Mac and Linux
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "globus_tokens.json")
@@ -1398,26 +1525,37 @@ def globus_get_transfer_client():
     return globus_sdk.TransferClient(authorizer=authorizer)
 
 # ── Data download ──────────────────────────────────────────────────────────────
-def download_data_western_us_GLOBUS(years, output_dir):
-    '''Download western US streamflow data from GLOBUS.
-    
+def download_data_western_us_GLOBUS(years, output_dir, huc8_shp, csv_out_dir):
+    '''Download western US streamflow data from GLOBUS, process each year to CSV,
+    and delete raw NC files before moving to the next year.
+
     https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
     https://hydrosource.ornl.gov/data/datasets/dayflow-v2/
+
+    Args:
+        years       : list of integer years to download and process
+        output_dir  : local directory where raw NC files are stored (one sub-folder per year)
+        huc8_shp    : path to western US HUC8 shapefile
+        csv_out_dir : directory where processed yearly CSVs are saved
     '''
-    
+
     if sys.platform != "darwin":
         raise RuntimeError(
             "This function only works on Mac with a GUI (Globus Connect Personal). "
             "It does NOT work on Linux CLI. "
-            "For Linux CLI download, use globus_download_Dayflow_LINUX.sh and the" 
+            "For Linux CLI download, use globus_download_Dayflow_LINUX.sh and the"
             "associated setup in globusCLI_setup_LINUX_HPC.txt."
         )
+
+    os.makedirs(csv_out_dir, exist_ok=True)
+    cache_path   = os.path.join(csv_out_dir, "outlet_comids_cache.csv")
+    outlet_cache = dayflow_load_outlet_cache(cache_path)
 
     tc = globus_get_transfer_client()
 
     for year in years:
         print(f"\n[{year}] Building transfer task...")
-    
+
         tdata = globus_sdk.TransferData(
             source_endpoint=SOURCE_EP,
             destination_endpoint=DEST_EP,
@@ -1430,7 +1568,7 @@ def download_data_western_us_GLOBUS(years, output_dir):
             f"10.13139_OLCF_2222888/VIC4_RAPID_PRISMAORC2019/{year}/"   # source - https://doi.ccs.ornl.gov/dataset/b01522d9-ace4-5ae1-a700-d7f07d62d0f0
         )
         dest_path = f"{output_dir}/{year}/"
-        
+
         local_dest = os.path.expanduser(dest_path)
         if not os.path.exists(local_dest):
             os.makedirs(local_dest)
@@ -1439,13 +1577,13 @@ def download_data_western_us_GLOBUS(years, output_dir):
         n_added = 0
         for entry in tc.operation_ls(SOURCE_EP, path=src_path):
             fname = entry["name"]
-            
+
             try:
                 huc8_id = fname.split("_")[2]          # e.g. "14010001C"
-                if huc8_id[:2] in WESTERN_PREFIX and huc8_id[-1] == "C":  # western US and USGS streamflow data assimiated files only
+                if huc8_id[:2] in WESTERN_PREFIX:  # downloading both naturalized flow and USGS streamflow assimiated versions
                     tdata.add_item(src_path + fname, dest_path + fname)
                     n_added += 1
-            
+
             except IndexError:
                 continue
 
@@ -1470,5 +1608,10 @@ def download_data_western_us_GLOBUS(years, output_dir):
             if status == 'FAILED':
                 print(f"  [{year}] Error: {task_info.get('fatal_error', 'unknown error')} — stopping.")
                 break
+
+            # Process raw NC files → CSV, then delete the raw folder
+            print(f"  [{year}] Processing downloaded files...")
+            dayflow_process_year(year, output_dir, huc8_shp, csv_out_dir, outlet_cache, cache_path)
+
         else:
             print(f"  [{year}] Transfer timed out after 24 hours — stopping.")
