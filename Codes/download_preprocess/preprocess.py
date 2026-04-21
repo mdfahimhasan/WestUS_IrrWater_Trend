@@ -9,11 +9,13 @@ import sys
 import logging
 import datetime
 import numpy as np
+import pandas as pd
 import rasterio as rio
 import rioxarray as rxr
 import geopandas as gpd
 from pathlib import Path
 from rasterio.mask import mask
+from rasterstats import zonal_stats
 from rasterio.warp import reproject, Resampling
 
 # Project root directory (works regardless of cwd)
@@ -1362,26 +1364,6 @@ def reclassify_GW_use_perc_rasters(GW_use_perc_dir, westUS_ROI,
             dst.write(gw_perc_arr, 1)
 
         ################################################################################################################
-        # # # creating a binary raster
-        # # >=70% GW use will be 1 (groundwater-dominated), others will be 0 (conjunctive use)
-        # gw_perc_binary = np.where(gw_perc_arr >= 70, 1, 0).squeeze()
-
-        # # save the binary classified raster
-        # binary_raster = os.path.join(output_dir, 'GW_use_ROI_binary.tif')
-        # with rio.open(
-        #         binary_raster,
-        #         'w',
-        #         driver='GTiff',
-        #         height=gw_perc_binary.shape[0],
-        #         width=gw_perc_binary.shape[1],
-        #         count=1,
-        #         dtype=gw_perc_binary.dtype,
-        #         crs=raster_file.crs,
-        #         transform=mask_transform,
-        #         nodata=-9999
-        # ) as dst:
-        #     dst.write(gw_perc_binary, 1)
-        
         # # creating a classification raster
         # < 30% GW use will be 0 (surface water)
         # 30-70% GW use will be 1 (conjunctive/mixed use)
@@ -1408,7 +1390,200 @@ def reclassify_GW_use_perc_rasters(GW_use_perc_dir, westUS_ROI,
         # delete the interim raster
         gw_perc.close()
         os.remove(interim_output_raster)
+
+
+def merge_ORNl_Dayflow_annual_data(input_annual_csv_dir, skip_processing=False):
+    """
+    Merge per-year ORNL Dayflow CSV files into a single dataset and convert
+    streamflow units from cfs to area-normalized mm.
+
+    Parameters
+    ----------
+    input_annual_csv_dir : str or Path
+        Directory containing per-year Dayflow CSV files
+        (e.g. ``Data_main/rasters/Dayflow/processed``).
+        Files whose names contain 'cache' are skipped.
+    skip_processing : bool, optional
+        If True, returns immediately without doing anything. Default False.
+
+    Returns
+    -------
+    None
+    
+    Output is written as a single merged CSV file.
+    """
+    if skip_processing:
+        return
+    
+    print('Merging ORNL Dayflow annual CSV files...')
+    
+    # get all annual csv files
+    input_annual_csv_list = list(Path(input_annual_csv_dir).glob('*.csv'))
+    input_annual_csv_list = [i for i in input_annual_csv_list if 'cache' not in str(i)]
+    
+    if not input_annual_csv_list:
+        logger.warning(f'No csv files fround in {input_annual_csv_dir}')
         
+    # read and concatenate all annual csvs into one dataframe
+    df_list = []
+    
+    for csv_file in input_annual_csv_list:
+        df = pd.read_csv(csv_file)
+        df_list.append(df)
+
+    merged_df = pd.concat(df_list, ignore_index=True)
+    merged_df = merged_df.rename(columns={'Sim_Q_N': 'Sim_Q_naturalized',
+                                          'Sim_Q_C': 'Sim_Q_assimilated'})   # units in cfs
+    
+    # converting unit from 'cfs' to area-normalized 'mm'
+    days_in_month = {1: 31, 
+                     2: 28, 
+                     3: 31, 
+                     4: 30,
+                     5: 31, 
+                     6: 30, 
+                     7: 31, 
+                     8: 31, 
+                     9: 30, 
+                     10: 31, 
+                     11: 30, 
+                     12: 31}
+    
+    days = merged_df['Month'].map(days_in_month)
+    merged_df['Sim_Q_naturalized_mm'] = merged_df['Sim_Q_naturalized'] * days * 1.9835 / (merged_df['Outlet_Drainage_Area'] * 247.105) * 304.8
+    merged_df['Sim_Q_assimilated_mm'] = merged_df['Sim_Q_assimilated'] * days * 1.9835 / (merged_df['Outlet_Drainage_Area'] * 247.105) * 304.8
+
+
+    # HUC8 columns converted to string and 8 digits with leading zeros (e.g., '01010001')
+    merged_df['HUC8'] = merged_df['HUC8'].astype(str).str.zfill(8)
+    
+    # save merged dataframe to a new csv
+    output_csv_path = Path(input_annual_csv_dir).parent / 'Merged_Dayflow.csv'
+
+    merged_df.to_csv(output_csv_path, index=False)
+    
+
+
+def build_processed_huc8(huc8_shp, states_shp, aquifer_shp, irr_cropland_datadir, 
+                         years, output_shp, irr_classification_threshold=3, skip_processing=False):
+    """
+    Build a GeoDataFrame of western US HUC8 watersheds with state,
+    aquifer, and irrigated-area attributes.
+
+    Workflow
+    --------
+    1. Assigns each HUC8 to the state it overlaps most (by area).
+    2. Assigns each HUC8 to the aquifer region it overlaps most (by area).
+       HUC8s outside any aquifer boundary retain NaN for aquifer columns.
+    3. Computes the median annual irrigated pixel count per HUC8 across all
+       years using vectorized zonal statistics, then converts to km².
+    4. Flags each HUC8 as irrigated if irrigated area exceeds {irr_classification_threshold}% of total area.
+
+    Parameters
+    ----------
+    huc8_shp : str or Path
+        Path to the HUC8 watershed shapefile.
+    states_shp : str or Path
+        Path to the western US states shapefile.
+    aquifer_shp : str or Path
+        Path to the aquifer-region shapefile (aquifers_by_state.shp).
+    irr_cropland_datadir : str or Path
+        Directory containing annual irrigated-cropland rasters
+        (one .tif per year, filename must contain the year).
+    years : list of int
+        Years to include when computing median irrigated area
+        (e.g. list(range(1986, 2024))).
+
+    Returns
+    -------
+    None. 
+    
+    Saves a processed HUC8 shapefile with added attributes for state, aquifer region, area, 
+    median irrigated area, and irrigated classification.
+    """
+
+    if skip_processing:
+        return None
+
+    huc8 = gpd.read_file(huc8_shp)
+    states = gpd.read_file(states_shp)
+    
+    print('Processing HUC8 shapefile to bring state and major aquifer boundary information + \n',
+    'classifyinhg each HUC8 as irrigated or non-irrigated based on median irrigated area across 1986-2023\n...')
+
+    ############### Ovelap HUC8 with states to assign state name to each HUC8 ###############
+
+    huc8 = huc8.to_crs('EPSG:5070')  # Reproject states to projected crs
+    states = states.to_crs('EPSG:5070')  # Reproject states to projected crs
+
+    # Intersection - creates new polygons where the shapefiles overlap
+    overlap = gpd.overlay(huc8, states, how='intersection')
+
+    # calculate the area of each intersection polygon
+    overlap['overlap_area'] = overlap.geometry.area
+
+    # for each HUC8, find the state with the largest overlap area
+    idx = overlap.groupby('HUC8')['overlap_area'].idxmax()
+    huc8_state_overlap = overlap.iloc[idx][['HUC8', 'NAME_1', 'NAME_2']]
+    overlap_state = huc8.merge(huc8_state_overlap, on='HUC8', how='left')
+
+    # keeping selected columns
+    overlap_state.rename(columns={'NAME_1': 'HUC8_name', 'NAME_2': 'State'}, inplace=True)
+
+    ############### Ovelap HUC8 with aquifer-region to assign these aquifer boundaries to each HUC8 ###############
+
+    aquifer_region = gpd.read_file(aquifer_shp)
+    aquifer_region = aquifer_region.to_crs('EPSG:5070')  # Reproject to projected crs
+
+    # Step 1: Intersection to find which aquifer each HUC8 overlaps with (and by how much)
+    overlap_2 = gpd.overlay(overlap_state, aquifer_region, how='intersection', keep_geom_type=False)
+    overlap_2['overlap_area'] = overlap_2.geometry.area
+
+    # For each HUC8, find the aquifer_region with the largest overlap area
+    idx = overlap_2.groupby('HUC8')['overlap_area'].idxmax()
+    best_aquifer_match = overlap_2.iloc[idx][['HUC8', 'ROCK_NAME', 'AQ_NAME', 'AQ_code', 'State_code', 'AQ_State', 'AQ_Region']]
+
+    # Step 2: Left-merge back to overlap_state so ALL ~1187 HUC8s are retained.
+    # HUC8s outside any aquifer boundary get NaN for aquifer columns.
+    processed_huc8 = overlap_state.merge(best_aquifer_match, on='HUC8', how='left')
+    processed_huc8['area_km2'] = processed_huc8.geometry.area / 1e6  # Convert from m^2 to km^2
+
+    print(f"Total HUC8s: {processed_huc8['HUC8'].nunique()}")
+    print(f"HUC8s with aquifer assignment: {processed_huc8['AQ_Region'].notna().sum()}")
+    print(f"HUC8s without aquifer (outside coverage): {processed_huc8['AQ_Region'].isna().sum()}")
+
+    ############### Median irrigated area per HUC8 (vectorized zonal_stats) ###############
+
+    irr_cropland_datadir = Path(irr_cropland_datadir)
+
+    # Reproject all HUC8s once to match raster CRS
+    sample_raster = list(irr_cropland_datadir.glob(f'*{years[0]}*.tif'))[0]
+    with rio.open(sample_raster) as src:
+        raster_crs = src.crs
+
+    huc8_reproj = processed_huc8.to_crs(raster_crs)  # reproject once, not 45,000 times
+
+    # One zonal_stats call per year across ALL HUC8s
+    all_counts = []
+    for year in years:
+        irr_data = list(irr_cropland_datadir.glob(f'*{year}*.tif'))[0]
+        stats = zonal_stats(huc8_reproj, str(irr_data), stats=['count'], nodata=-9999)
+        counts = [s['count'] if s['count'] is not None else np.nan for s in stats]
+        all_counts.append(counts)
+
+    # all_counts shape: (n_years x n_huc8s) — median across years per HUC8
+    counts_df = pd.DataFrame(all_counts, columns=processed_huc8.index)
+    processed_huc8['median_irr_pixel_count'] = counts_df.median(axis=0).values
+    processed_huc8['irr_area'] = processed_huc8['median_irr_pixel_count'] * 4  # km²
+
+    irrigated_huc8 = processed_huc8['irr_area'] > (irr_classification_threshold * processed_huc8['area_km2'] / 100)  # irrigated HUC8 mask
+    processed_huc8['Irrigated'] = irrigated_huc8
+
+    # Save the processed HUC8 geodataframe to a shapefile
+    processed_huc8.to_file(output_shp, driver='ESRI Shapefile')
+
+    print('\nProcessed HUC8 shapefile saved to ->', output_shp)
+
 
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
@@ -1425,7 +1600,9 @@ def run_all_preprocessing(years_list,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
                           skip_calculate_growing_season_IWU=False,
-                          skip_create_water_source_rasters=False
+                          skip_create_water_source_rasters=False,
+                          skip_merge_ORNl_Dayflow_annual_data=False,
+                          skip_build_processed_huc8=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1543,5 +1720,20 @@ def run_all_preprocessing(years_list,
                                    westUS_ROI=WestUS_shape,
                                    output_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/Water_source_classification',
                                    skip_processing=skip_create_water_source_rasters)
+    
+    # merge ORNL Dayflow annual data into one csv
+    merge_ORNl_Dayflow_annual_data(input_annual_csv_dir=PROJECT_ROOT / 'Data_main/rasters/Dayflow/processed', 
+                                   skip_processing=skip_merge_ORNl_Dayflow_annual_data) 
 
+
+    # build processed HUC8 geodataframe with state and aquifer info + irrigated/non-irrigated classification
+    build_processed_huc8(
+    huc8_shp=PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_HUC8.shp',
+    states_shp=PROJECT_ROOT / "Data_main/ref_shapes/WestUS_states.shp",
+    aquifer_shp=PROJECT_ROOT / "Data_main/ref_shapes/aquifers_ROI/aquifers_by_state.shp",
+    irr_cropland_datadir=PROJECT_ROOT / "Data_main/rasters/Irrigated_cropland",
+    output_shp=PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_HUC8_processed.shp',
+    irr_classification_threshold=3,  # HUC8 classified as irrigated if median irrigated area > 3% of total area
+    years=list(range(1986, 2024)),
+    skip_processing=skip_build_processed_huc8)
     
