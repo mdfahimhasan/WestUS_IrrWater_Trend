@@ -13,6 +13,7 @@ import geopandas as gpd
 import pyfixest as pf
 from pathlib import Path
 from rasterstats import zonal_stats
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Project root directory (works regardless of cwd)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -27,352 +28,440 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def create_monthly_panel_dataframe(
-        years_list,
-        aquifer_state_shapefile,
-        aquifer_state_name_col,
-        aquifer_region_col,
-        aquifer_name_col,
-        state_name_col,
-        irrigated_cropland_dir,
-        monthly_data_dirs,
-        annual_data_dirs,
-        static_data_dirs,
-        output_csv_path,
-        column_rename=None,
-        include_zero_cols=None,
-        growing_season_months=range(4, 11),
-        no_data_value=-9999,
-        skip_processing=False):
-    """
-    Aggregate raster datasets to aquifer-state unit level using exact polygon
-    boundaries from a shapefile (via rasterstats) and construct a monthly panel
-    DataFrame. Each row represents one (unit × year × month) observation.
+class BuildPanelDF:
+    
+    snowmelt_months = {
+    # Pacific Coast / Cascades / Sierra Nevada
+    "California"    : [4, 5, 6],      # Sierra Nevada; Tulare Apr-May, San Joaquin May-Jun
+    "Oregon"        : [4, 5, 6],      # Cascades + eastern OR ranges
+    "Washington"    : [4, 5, 6],      # Cascades; Yakima Apr-Jun
 
-    All variables are aggregated over IRRIGATED PIXELS ONLY within each polygon,
-    using the annual irrigated cropland classification as a pixel-level pre-mask
-    (irr == 1 strictly) before running zonal statistics.
+    # Rocky Mountains / Intermountain West
+    "Idaho"         : [4, 5, 6],      # Snake River basin; Apr-Jun
+    "Montana"       : [4, 5, 6],      # Northern Rockies; Apr-Jun, higher elev. extends to Jul
+    "Wyoming"       : [4, 5, 6],      # Wind River / Bighorn / Teton ranges
+    "Colorado"      : [4, 5, 6],      # 70-80% annual runoff from Apr-Jul snowmelt
+    "Utah"          : [4, 5, 6],      # Wasatch / Uinta ranges
+    "Nevada"        : [4, 5],         # Humboldt + Great Basin ranges; brief Apr-May peak
+    "New Mexico"    : [4, 5, 6],      # Southern Rockies / Rio Grande headwaters
 
-    Zero and nodata handling
-    ------------------------
-    - Nodata (-9999) is ALWAYS excluded for all variables. Converted to NaN on load.
-    - Zero values are excluded by default for all variables.
-      Exception: columns listed in `include_zero_cols` retain zero-valued pixels.
-      Use for precipitation, where zero is physically meaningful (no rainfall).
-    - Example: include_zero_cols=['Precip_mm']
+    # Southwest / Lower Basin
+    "Arizona"       : [],             # Lower Colorado/Gila — rain/monsoon dominated; minimal snowmelt
 
-    IMPORTANT: All rasters must be co-registered to the same grid (same CRS,
-    resolution, and extent) as the irrigated cropland raster. The irrigated mask
-    is applied element-wise before zonal aggregation. A shape mismatch will raise
-    a ValueError.
+    # Great Plains
+    "North Dakota"  : [4, 5],         # Flat terrain snowpack; rapid Apr-May melt
+    "South Dakota"  : [4, 5],         # Apr-May snowmelt peak
+    "Nebraska"      : [4, 5],         # Indirect snowmelt via Platte R.; low confidence
+    "Kansas"        : [4, 5],         # Low/indirect snowmelt recharge; use cautiously
+    "Oklahoma"      : [],             # No significant snowmelt in streamflow
+    "Texas"         : [],             # Minimal — HPA recharge only 0.024 in/yr
+}
 
-    Variable config format
-    ----------------------
-    Each variable is a 2-element tuple:
-        (directory_or_path, aggregation_method)
+    def __init__(self, n_workers=8):
+        self.n_workers = n_workers
 
-    Aggregation methods:
-        'mean'   — mean   over valid pixels
-        'median' — median over valid pixels
-        'sum'    — sum    over valid pixels
+    # =============================================================================
+    # Module-level helpers — must be at module level (not nested) so that
+    # multiprocessing can pickle them for worker processes.
+    # =============================================================================
 
-    Example inputs
-    --------------
-        aquifer_state_shapefile = PROJECT_ROOT / 'Data_main/shapefiles/aquifer_state_units.shp'
-        aquifer_state_name_col  = 'AQ_State'
-        aquifer_name_col        = 'AQ_code'
-        aquifer_region_col      = 'AQ_Name'
-        state_name_col          = 'State'
+    @staticmethod
+    def _load_arr(path, no_data_value):
+        """Load raster as float32 array; nodata → NaN. Returns (array, transform)."""
 
-        monthly_data_dirs = {
-            'ET_mm'     : (PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',              'mean'),
-            'IWU_v1_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v1_current',       'mean'),
-            'IWU_v2_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v2_current_prev1', 'mean'),
-            'IWU_v3_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v3_current_prev2', 'mean'),
-            'Precip_mm' : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',           'mean'),
-            'Tmean_C'   : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Tmean/monthly',                   'mean'),
-        }
-
-        annual_data_dirs = {
-            'Irr_area_ha' : (PROJECT_ROOT / 'Data_main/rasters/Irrigated_area', 'sum'),
-        }
-
-        static_data_dirs = {
-            'WTD_Rnd_Frst_m'   : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF',          'median'),
-            'WTD_USGS_m'       : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD',   'median'),
-            'GW_or_conjunctive' : (PROJECT_ROOT / 'Data_main/rasters/GW_use_%/GW_use_binary/GW_use_perc_ROI_final.tif', 'median')
-        }
-
-        include_zero_cols = ['Precip_mm']
-
-    :param years_list: List of years to process.
-    :param aquifer_state_shapefile: Path to aquifer-state polygon shapefile.
-                                     Each row = one aquifer-state unit.
-    :param aquifer_state_name_col: Shapefile column for aquifer-state unit name
-                                    (e.g. 'AQ_State' → 'BR_AZ', 'CP_OR').
-    :param aquifer_region_col: Shapefile column for aquifer region/name
-                                (e.g. 'AQ_Region' → 'CV_CA_Sacramento', 'HPA_KS_East').
-    :param aquifer_name_col: Shapefile column for aquifer code
-                              (e.g. 'AQ_code' → 'BR', 'CP', 'HPA').
-    :param state_name_col: Shapefile column for state name (e.g. 'State' → 'Arizona').
-    :param irrigated_cropland_dir: Directory of annual irrigated cropland rasters.
-                                    Pattern: *{year}*.tif  (1=irrigated, -9999=nodata).
-                                    Only pixels with value == 1 are treated as irrigated.
-    :param monthly_data_dirs: Dict of {col: (directory, agg_method)} for monthly rasters.
-    :param annual_data_dirs: Dict of {col: (directory, agg_method)} for annual rasters.
-    :param static_data_dirs: Dict of {col: (directory, agg_method)} for static rasters.
-    :param output_csv_path: Path to save the output panel CSV.
-    :param column_rename: Optional dict to rename output DataFrame columns.
-    :param include_zero_cols: List of column names where zero values should be retained
-                               during aggregation (e.g. ['Precip_mm']). All other columns
-                               have zeros excluded by default.
-    :param growing_season_months: Months to process. Default: April–October (range(4, 11)).
-    :param no_data_value: Nodata value used across all rasters. Default: -9999.
-    :param skip_processing: If True, skip this step and return None.
-
-    :return: pd.DataFrame of the monthly panel, or None if skipped.
-    """
-    if skip_processing:
-        return None
-
-    include_zero_cols = set(include_zero_cols) if include_zero_cols else set()
-
-    # -------------------------------------------------------------------------
-    # helper: normalise config tuple to (Path, agg_method)
-    # -------------------------------------------------------------------------
-    def parse_config(config_dict):
-        if config_dict is None: # in case an empty config is passed, avoid iterating over None 
-            return {}
-        
-        return {k: (Path(v[0]), v[1]) for k, v in config_dict.items()}
-
-    # -------------------------------------------------------------------------
-    # helper: load raster as float32 array + affine transform
-    #         nodata → NaN on load so rasterstats sees NaN as the nodata value
-    # -------------------------------------------------------------------------
-    def load_arr(path):
-        """Returns (array, transform) or (None, None) if file missing."""
         if path is None or not Path(path).exists():
             return None, None
+        
         with rio.open(path) as src:
             arr = src.read(1).astype(np.float32)
             transform = src.transform
+        
         arr[arr == no_data_value] = np.nan
+        
         return arr, transform
 
-    # -------------------------------------------------------------------------
-    # helper: find first file matching glob pattern
-    # -------------------------------------------------------------------------
-    def find_file(directory, pattern):
-        if '.tif' in directory.name:  # if a file path is given instead of a directory
+
+    @staticmethod
+    def _find_file(directory, pattern):
+        """Return first file matching glob pattern, or the path itself if it's a .tif."""
+        
+        directory = Path(directory)
+        
+        if '.tif' in directory.name:
             return directory
         
         matches = list(directory.glob(pattern))
+        
         return matches[0] if matches else None
 
-    # -------------------------------------------------------------------------
-    # helper: apply irrigated mask + zero exclusion to array
-    #         result is passed directly to rasterstats (NaN = nodata)
-    # -------------------------------------------------------------------------
-    def apply_irr_mask(arr, irr_mask, col_name):
-        """
-        Set non-irrigated pixels to NaN (irr_mask==False).
-        Also set zeros to NaN unless col_name is in include_zero_cols.
-        Array and irr_mask must have identical shapes (same grid required).
-        """
+
+    @ staticmethod
+    def _parse_config(config_dict):
+        """Normalise config dict values to (str path, agg_method) for pickling."""
+    
+        if config_dict is None:
+            return {}
+        
+        return {k: (str(Path(v[0])), v[1]) for k, v in config_dict.items()}
+
+
+    @staticmethod
+    def _apply_irr_mask(arr, irr_mask, col_name, include_zero_cols):
+        """Mask non-irrigated pixels; also zero-mask unless col is in include_zero_cols."""
+        
         if arr.shape != irr_mask.shape:
             raise ValueError(
                 f'Shape mismatch for "{col_name}": array={arr.shape}, '
                 f'irr_mask={irr_mask.shape}. All rasters must share the same grid.'
             )
-    
-        # setting non-irrigated pixels to NaN ensures rasterstats 'count' = irrigated pixel count
-        out = arr.copy()
-        out[~irr_mask] = np.nan                       # non-irrigated → NaN
         
-        # set zero values to NaN, except for precipitation
+        out = arr.copy()
+        out[~irr_mask] = np.nan
+       
         if col_name not in include_zero_cols:
-            out[out == 0] = np.nan                    # zeros → NaN (fallow / no demand)
-
+            out[out == 0] = np.nan
+        
         return out
 
-    # -------------------------------------------------------------------------
-    # helper: run zonal_stats on a pre-masked array, return list of values
-    #         (one value per polygon, same order as gdf rows)
-    # -------------------------------------------------------------------------
-    def run_zonal(arr, transform, stat):
-        results = zonal_stats(
-            gdf.geometry, arr, affine=transform,
-            nodata=np.nan, stats=[stat]
-        )
-        # rasterstats returns None (not NaN) when no valid pixels exist
-        return [r.get(stat) if r.get(stat) is not None else np.nan
-                for r in results]
-        
-    # -------------------------------------------------------------------------
-    # helper: compile annual winter precip dataset into monthly values with a linear decay trend
-    # -------------------------------------------------------------------------
-    # Winter precip (sum from November to March) in an annual dataset
-    # We are assigning the data to the monthly panel data.
-    # The data will be assigned in a linear decay trned. 
-    # For example, April receives the 75% of the winter precip, May receives 50%, 
-    # June receives 25%, and July–October receive 0% of the winter precip.
-    
-    def compile_winter_precip(dir, year, month, agg):
-        fpath = find_file(dir, f'*{year}.tif')
 
-        arr, transform = load_arr(fpath)
-        masked = apply_irr_mask(arr, irr_mask, col)
-        
-        if month == 4:
-            weight = 0.75
-            vals = np.array(run_zonal(masked, transform, agg)) * weight
-        
-        elif month == 5:
-            weight = 0.5
-            vals = np.array(run_zonal(masked, transform, agg)) * weight
-        
-        elif month == 6:
-            weight = 0.25
-            vals = np.array(run_zonal(masked, transform, agg)) * weight
-        
-        else:
-            vals = [0] * len(gdf)  # assign zero for July–October
-        
-        return vals                
+    @staticmethod
+    def _run_zonal(geometries, arr, transform, stat):
+        """Run zonal_stats on array; returns list of values (one per polygon)."""
+        results = zonal_stats(geometries, arr, affine=transform, nodata=np.nan, stats=[stat])
+        return [r.get(stat) if r.get(stat) is not None else np.nan for r in results]
 
+    @staticmethod
+    def _process_one_year(args):
+        """
+        Worker function: process all variables for a single year.
+        Accepts a single dict of arguments (required for ProcessPoolExecutor pickling).
+        Returns a partial DataFrame for that year.
+        """
+        year                   = args['year']
+        gdf                    = args['gdf']
+        irrigated_cropland_dir = Path(args['irrigated_cropland_dir'])
+        monthly_data_path_dict = BuildPanelDF._parse_config(args['monthly_data_path_dict'])
+        annual_data_path_dict  = BuildPanelDF._parse_config(args['annual_data_path_dict'])
+        static_data_path_dict  = BuildPanelDF._parse_config(args['static_data_path_dict'])
+        HUC8_name_col          = args['HUC8_name_col']
+        aquifer_region_col     = args['aquifer_region_col']
+        aquifer_name_col       = args['aquifer_name_col']
+        state_name_col         = args['state_name_col']
+        growing_season_months  = args['growing_season_months']
+        include_zero_cols      = set(args['include_zero_cols'])
+        no_data_value          = args['no_data_value']
 
-    logger.info('---------------------------------------------------------------')
-    logger.info(f'Starting to compile monthly panel dataframe')
- 
-    # -------------------------------------------------------------------------
-    # path setup
-    # -------------------------------------------------------------------------
-    irrigated_cropland_dir = Path(irrigated_cropland_dir)
-    output_csv_path        = Path(output_csv_path)
-    output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        n_months = len(growing_season_months)
+        all_cols = (list(annual_data_path_dict.keys()) + list(monthly_data_path_dict.keys()) +
+                    list(static_data_path_dict.keys()) + ['HUC8', 'State', 'AQ_NAME', 'AQ_Region', 'year', 'month'])
+        results_dict = {col: [] for col in all_cols}
 
-    monthly_data_path_dict = parse_config(monthly_data_dirs)
-    annual_data_path_dict  = parse_config(annual_data_dirs)
-    static_data_path_dict = parse_config(static_data_dirs)
+        geometries = gdf.geometry
 
-    # -------------------------------------------------------------------------
-    # load shapefile 
-    # -------------------------------------------------------------------------
-    gdf = gpd.read_file(aquifer_state_shapefile)
+        # load irrigated mask for this year
+        irr_file = BuildPanelDF._find_file(irrigated_cropland_dir, f'*{year}*.tif')
+        irr_arr, _ = BuildPanelDF._load_arr(irr_file, no_data_value)
+        irr_mask = (irr_arr == 1)
 
-    # ------------------------------------------------------------------------
-    # main processing loop
-    # -------------------------------------------------------------------------
-    
-    # empty dictionary for storing extraced data from annual/static/monthly datasets
-    # need to handle the case where annual_data_path_dict returns an empty dict
-    all_panel_cols = list(annual_data_path_dict.keys()) + list(monthly_data_path_dict.keys()) + \
-        list(static_data_path_dict.keys()) + ['aquifer_state', 'aquifer_region', 'aquifer', 'state', 'year', 'month']
-    results_dict = {col: [] for col in all_panel_cols}
-
-    for year in years_list:
-        logger.info(f'Processing year={year}...')
-
-        # load irrigated cropland classification
-        # irr == 1 → irrigated; 0 or NaN → excluded
-        irr_file = find_file(irrigated_cropland_dir, f'*{year}*.tif')
-        irr_arr, irr_transform = load_arr(irr_file)
-        irr_mask = (irr_arr == 1)   # strictly irrigated pixels only
-
-        #-------------------------------------------------------------
-        # extract annual data for this year
-        #-------------------------------------------------------------
-        
-        if annual_data_dirs is None: # in case of empty config for annual data
-            logger.info('No annual data directories provided — skipping annual variables.')
-            pass
-        
-        else:            
-            for col, (dir_path, agg) in annual_data_path_dict.items():
-                fpath = find_file(dir_path, f'*{year}*.tif')
-
-                if fpath is None:
-                    logger.warning(f'Annual data missing: col="{col}", year={year}.')
-                    results_dict[col].extend([np.nan] * len(gdf) * len(list(growing_season_months)))
-                    continue
-                
-                arr, transform = load_arr(fpath)
-                masked = apply_irr_mask(arr, irr_mask, col)
-                vals = run_zonal(masked, transform, agg)
-                results_dict[col].extend(vals * len(growing_season_months))
-
-        #-------------------------------------------------------------
-        # extract static data for this year
-        #-------------------------------------------------------------
-        for col, (dir_path, agg) in static_data_path_dict.items():
-            fpath = find_file(dir_path, f'*.tif')
-
+        # annual data (broadcast across all months)
+        for col, (dir_path, agg) in annual_data_path_dict.items():
+            fpath = BuildPanelDF._find_file(dir_path, f'*{year}*.tif')
+            
             if fpath is None:
-                logger.warning(f'Static data missing: col="{col}"')
-                results_dict[col].extend([np.nan] * len(gdf) * len(growing_season_months))
+                results_dict[col].extend([np.nan] * len(gdf) * n_months)
                 continue
             
-            arr, transform = load_arr(fpath)
-            masked = apply_irr_mask(arr, irr_mask, col)  
-            vals   = run_zonal(masked, transform, agg) # here we are not masking with irr_mask; some WTD data is CONUS wide
-            results_dict[col].extend(vals * len(growing_season_months))
+            arr, transform = BuildPanelDF._load_arr(fpath, no_data_value)
+            masked = BuildPanelDF._apply_irr_mask(arr, irr_mask, col, include_zero_cols)
+            vals = BuildPanelDF._run_zonal(geometries, masked, transform, agg)
+            
+            results_dict[col].extend(vals * n_months)
 
-        # ----------------------------------------------------------------------
-        # extract monthly data for this year
-        # ----------------------------------------------------------------------
+        # static data (no irr_mask — aggregated over full HUC8)
+        for col, (dir_path, agg) in static_data_path_dict.items():
+            fpath = BuildPanelDF._find_file(dir_path, f'*.tif')
+            
+            if fpath is None:
+                results_dict[col].extend([np.nan] * len(gdf) * n_months)
+                continue
+            
+            arr, transform = BuildPanelDF._load_arr(fpath, no_data_value)
+            vals = BuildPanelDF._run_zonal(geometries, arr, transform, agg)
+            
+            results_dict[col].extend(vals * n_months)
+
+        # monthly data
         for month in growing_season_months:
-
-            # load monthly variable arrays
             for col, (dir_path, agg) in monthly_data_path_dict.items():
-                
-                data = list(dir_path.glob(f'*{year}*.tif'))
-                
-                if len(data) == 0:
-                    raise ValueError(f'Monthly data missing: col="{col}", year={year}, month={month}.')
-                                        
-                if 'winterprecip' in col.lower():
-                             
-                    vals = compile_winter_precip(dir_path, year, month, agg)
-                    results_dict[col].extend(vals)
-                        
-                        
-                else:
-                    fpath = find_file(dir_path, f'*{year}_{month}.tif')                
-                
-                    arr, transform = load_arr(fpath)
-                    masked = apply_irr_mask(arr, irr_mask, col)
-                    vals = run_zonal(masked, transform, agg)
-                    results_dict[col].extend(vals)
+                year_files = list(Path(dir_path).glob(f'*{year}*.tif'))
+            
+                if len(year_files) == 0:
+                    raise ValueError(f'Monthly data missing: col="{col}", year={year}.')
+            
+                fpath = BuildPanelDF._find_file(dir_path, f'*{year}_{month}.tif')
+                arr, transform = BuildPanelDF._load_arr(fpath, no_data_value)
+                masked = BuildPanelDF._apply_irr_mask(arr, irr_mask, col, include_zero_cols)
+                vals = BuildPanelDF._run_zonal(geometries, masked, transform, agg)
+            
+                results_dict[col].extend(vals)
 
-            # ----------------------------------------------------------------------
-            # add aquifer-state/aquifer/state/year/month info for this month
-            # ----------------------------------------------------------------------
-            results_dict['aquifer_state'].extend(gdf[aquifer_state_name_col].values)
-            results_dict['aquifer_region'].extend(gdf[aquifer_region_col].values)
-            results_dict['aquifer'].extend(gdf[aquifer_name_col].values)
-            results_dict['state'].extend(gdf[state_name_col].values)
+            results_dict['HUC8'].extend(gdf[HUC8_name_col].values)
+            results_dict['AQ_Region'].extend(gdf[aquifer_region_col].values)
+            results_dict['AQ_NAME'].extend(gdf[aquifer_name_col].values)
+            results_dict['State'].extend(gdf[state_name_col].values)
             results_dict['year'].extend([year] * len(gdf))
             results_dict['month'].extend([month] * len(gdf))
+
+        return pd.DataFrame(results_dict)
+
+
+    def create_monthly_panel_dataframe(
+            self,
+            years_list,
+            HUC8_shapefile,
+            HUC8_name_col,
+            aquifer_region_col,
+            aquifer_name_col,
+            state_name_col,
+            irrigated_cropland_dir,
+            monthly_data_dirs,
+            annual_data_dirs,
+            static_data_dirs,
+            streamflow_csv_path,
+            output_csv_path,
+            column_rename=None,
+            include_zero_cols=None,
+            growing_season_months=range(4, 11),
+            no_data_value=-9999,
+            skip_processing=False):
+        """
+        Aggregate raster datasets to aquifer-state unit level using exact polygon
+        boundaries from a shapefile (via rasterstats) and construct a monthly panel
+        DataFrame. Each row represents one (unit × year × month) observation.
+
+        All variables are aggregated over IRRIGATED PIXELS ONLY within each polygon,
+        using the annual irrigated cropland classification as a pixel-level pre-mask
+        (irr == 1 strictly) before running zonal statistics.
+
+        Zero and nodata handling
+        ------------------------
+        - Nodata (-9999) is ALWAYS excluded for all variables. Converted to NaN on load.
+        - Zero values are excluded by default for all variables.
+        Exception: columns listed in `include_zero_cols` retain zero-valued pixels.
+        Use for precipitation, where zero is physically meaningful (no rainfall).
+        - Example: include_zero_cols=['Precip_mm']
+
+        IMPORTANT: All rasters must be co-registered to the same grid (same CRS,
+        resolution, and extent) as the irrigated cropland raster. The irrigated mask
+        is applied element-wise before zonal aggregation. A shape mismatch will raise
+        a ValueError.
+
+        Variable config format
+        ----------------------
+        Each variable is a 2-element tuple:
+            (directory_or_path, aggregation_method)
+
+        Aggregation methods:
+            'mean'   — mean   over valid pixels
+            'median' — median over valid pixels
+            'sum'    — sum    over valid pixels
+
+        Example inputs
+        --------------
+            aquifer_state_shapefile = PROJECT_ROOT / 'Data_main/shapefiles/aquifer_state_units.shp'
+            aquifer_state_name_col  = 'AQ_State'
+            aquifer_name_col        = 'AQ_code'
+            aquifer_region_col      = 'AQ_Name'
+            state_name_col          = 'State'
+
+            monthly_data_dirs = {
+                'ET_mm'     : (PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',              'mean'),
+                'IWU_v1_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v1_current',       'mean'),
+                'IWU_v2_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v2_current_prev1', 'mean'),
+                'IWU_v3_mm' : (PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v3_current_prev2', 'mean'),
+                'Precip_mm' : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',           'mean'),
+                'Tmean_C'   : (PROJECT_ROOT / 'Data_main/rasters/PRISM_Tmean/monthly',                   'mean'),
+            }
+
+            annual_data_dirs = {
+                'Irr_area_ha' : (PROJECT_ROOT / 'Data_main/rasters/Irrigated_area', 'sum'),
+            }
+
+            static_data_dirs = {
+                'WTD_Rnd_Frst_m'   : (PROJECT_ROOT / 'Data_main/rasters/CONUS_WTD_RF',          'median'),
+                'WTD_USGS_m'       : (PROJECT_ROOT / 'Data_main/rasters/USGS_Unconfined_WTD',   'median'),
+                'Water_source' : (PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/Water_source_classification/Water_source_classification.tif', 'median')
+            }
+
+            include_zero_cols = ['Precip_mm']
+
+        :param years_list: List of years to process.
+        :param HUC8_shapefile: Path to HUC8 polygon shapefile.
+                                Each row = one HUC8 unit.
+        :param HUC8_name_col: Shapefile column for HUC8 unit name
+                            (e.g. 'HUC8' → '12050005', '11050002').
+        :param aquifer_region_col: Shapefile column for aquifer region/name
+                                    (e.g. 'AQ_Region' → 'CV_CA_Sacramento', 'HPA_KS_East').
+        :param aquifer_name_col: Shapefile column for aquifer code
+                                (e.g. 'AQ_code' → 'BR', 'CP', 'HPA').
+        :param state_name_col: Shapefile column for state name (e.g. 'State' → 'Arizona').
+        :param irrigated_cropland_dir: Directory of annual irrigated cropland rasters.
+                                        Pattern: *{year}*.tif  (1=irrigated, -9999=nodata).
+                                        Only pixels with value == 1 are treated as irrigated.
+        :param monthly_data_dirs: Dict of {col: (directory, agg_method)} for monthly rasters.
+        :param annual_data_dirs: Dict of {col: (directory, agg_method)} for annual rasters.
+        :param static_data_dirs: Dict of {col: (directory, agg_method)} for static rasters.
+        :param output_csv_path: Path to save the output panel CSV.
+        :param column_rename: Optional dict to rename output DataFrame columns.
+        :param include_zero_cols: List of column names where zero values should be retained
+                                during aggregation (e.g. ['Precip_mm']). All other columns
+                                have zeros excluded by default.
+        :param growing_season_months: Months to process. Default: April–October (range(4, 11)).
+        :param no_data_value: Nodata value used across all rasters. Default: -9999.
+        :param skip_processing: If True, skip this step and return None.
+
+        :return: pd.DataFrame of the monthly panel, or None if skipped.
+        """
+        if skip_processing:
+            return None
+
+        include_zero_cols     = list(include_zero_cols) if include_zero_cols else []
+        growing_season_months = list(growing_season_months)
+        years_list            = list(years_list)
+
+        logger.info('\n---------------------------------------------------------------')
+        logger.info(f'\nStarting to compile monthly panel dataframe  |  n_workers={self.n_workers}\n')
+
+        # -------------------------------------------------------------------------
+        # path setup
+        # -------------------------------------------------------------------------
+        irrigated_cropland_dir = Path(irrigated_cropland_dir)
+        output_csv_path        = Path(output_csv_path)
+        output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+        monthly_data_path_dict = self._parse_config(monthly_data_dirs)
+        annual_data_path_dict  = self._parse_config(annual_data_dirs)
+        static_data_path_dict  = self._parse_config(static_data_dirs)
+
+        # -------------------------------------------------------------------------
+        # load shapefile + reproject to match raster CRS once (shared across workers)
+        # -------------------------------------------------------------------------
+        gdf = gpd.read_file(HUC8_shapefile)
+        _ref_raster = self._find_file(irrigated_cropland_dir, f'*{years_list[0]}*.tif')
+        with rio.open(_ref_raster) as _src:
+            raster_crs = _src.crs
+        if gdf.crs != raster_crs:
+            gdf = gdf.to_crs(raster_crs)
+
+        # -------------------------------------------------------------------------
+        # build per-year argument dicts — one dict passed to each worker process
+        # -------------------------------------------------------------------------
+        worker_args = [
+            {
+                'year'                  : year,
+                'gdf'                   : gdf,
+                'irrigated_cropland_dir': str(irrigated_cropland_dir),
+                'monthly_data_path_dict': monthly_data_path_dict,
+                'annual_data_path_dict' : annual_data_path_dict,
+                'static_data_path_dict' : static_data_path_dict,
+                'HUC8_name_col'         : HUC8_name_col,
+                'aquifer_region_col'    : aquifer_region_col,
+                'aquifer_name_col'      : aquifer_name_col,
+                'state_name_col'        : state_name_col,
+                'growing_season_months' : growing_season_months,
+                'include_zero_cols'     : include_zero_cols,
+                'no_data_value'         : no_data_value,
+            }
+            for year in years_list
+        ]
+
+        # -------------------------------------------------------------------------
+        # parallel processing — one worker per year
+        # -------------------------------------------------------------------------
+        partial_dfs = [None] * len(years_list)
+
+        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+            # executor.submit() launches a worker and returns a Future object (a receipt for a running job)
+            # That Future becomes the dict key, and i (the index) becomes the value → {Future: i}
+            # This can be later used to look up WHICH year a completed future belongs to, since as_completed()
+            # returns futures in completion order (not submission order)
+            future_to_idx = {executor.submit(self._process_one_year, args): i
+                            for i, args in enumerate(worker_args)}
             
-    # -------------------------------------------------------------------------
-    # build DataFrame
-    # -------------------------------------------------------------------------
-    panel_df = pd.DataFrame(results_dict)
+            for future in as_completed(future_to_idx):
+                i    = future_to_idx[future]
+                
+                year = years_list[i]
+                
+                try:
+                    partial_dfs[i] = future.result()
+                    logger.info(f'Year {year} done.\n')
+                
+                except Exception as e:
+                    logger.error(f'Year {year} failed: {e}')
+                    raise
 
-    if column_rename:
-        missing = [k for k in column_rename if k not in panel_df.columns]
-        if missing:
-            logger.warning(f'column_rename keys not found in DataFrame: {missing}')
-            
-        panel_df = panel_df.rename(columns=column_rename)
+        # -------------------------------------------------------------------------
+        # concatenate year results (partial_dfs preserves year order)
+        # -------------------------------------------------------------------------
+        panel_df = pd.concat(partial_dfs, ignore_index=True)
 
-    panel_df.to_csv(output_csv_path, index=False)
-    logger.info(f'Raw Panel dataframe saved → {output_csv_path}  |  shape: {panel_df.shape}')
-    logger.info(('*** Further processing might be required before regression model ***'))
-    logger.info('---------------------------------------------------------------')
+        
+        # -------------------------------------------------------------------------
+        # snowmelt-driven peak streamflow (max Q across snowmelt months, per HUC8-year)
+        # broadcast to all months of that year for that HUC8
+        # -------------------------------------------------------------------------
+        stream_df = pd.read_csv(streamflow_csv_path, dtype={'HUC8': str})[['HUC8', 'year', 'Month', 'Sim_Q_naturalized_mm']]
+        stream_df.loc[:, 'HUC8'] = stream_df['HUC8'].astype(str).str.zfill(8)
 
-    return panel_df
+        # attach state and its snowmelt months to stream_df
+        huc8_state = panel_df[['HUC8', 'State']].copy()
+        huc8_state['HUC8'] = huc8_state['HUC8'].astype(str).str.zfill(8)
+        stream_df = stream_df.merge(huc8_state, on='HUC8', how='left')
+        stream_df['streamflow_months'] = stream_df['State'].map(self.snowmelt_months)
+        
+        # keep only rows whose month falls in that state's snowmelt window
+        # (states with no snowmelt — AZ, TX, OK — map to [] and are excluded entirely)
+        stream_df = stream_df[stream_df.apply(
+            lambda row: isinstance(row['streamflow_months'], list) and (row['Month'] in row['streamflow_months']), axis=1)]
+
+        # max naturalized Q across snowmelt months → one value per HUC8-year
+    
+        snowmelt_agg = (stream_df.groupby(['HUC8', 'year'])
+                                .agg({'Sim_Q_naturalized_mm': 'max'})
+                                .reset_index()
+                                .rename(columns={'Sim_Q_naturalized_mm': 'Max_snowmelt_Q_mm'}))
+       
+
+        # left-merge on HUC8+year → same annual value broadcast across all months
+        panel_df = panel_df.merge(snowmelt_agg, on=['HUC8', 'year'], how='left')
+        
+        # For HUCs with no streamflow, setting max naturalized Q as 0
+        panel_df['Max_snowmelt_Q_mm'] = panel_df['Max_snowmelt_Q_mm'].fillna(0) 
+        
+        # -------------------------------------------------------------------------
+        # adding HUC8s irrigated/non-irrigated status
+        # -------------------------------------------------------------------------
+        irr_status = gdf[[HUC8_name_col, 'Irrigated']]
+        panel_df = panel_df.merge(irr_status, on='HUC8', how='left')
+        
+        # -------------------------------------------------------------------------
+        # save DataFrame
+        # -------------------------------------------------------------------------
+        if column_rename:
+            missing = [k for k in column_rename if k not in panel_df.columns]
+            if missing:
+                logger.warning(f'column_rename keys not found in DataFrame: {missing}')
+                
+            panel_df = panel_df.rename(columns=column_rename)
+
+        panel_df.to_csv(output_csv_path, index=False)
+        logger.info(f'\nRaw Panel dataframe saved → {output_csv_path}  |  shape: {panel_df.shape}\n')
+        logger.info(('\n*** Further processing might be required before regression model ***\n'))
+        logger.info('\n---------------------------------------------------------------')
+
+        return panel_df
 
 
 def compute_anomaly_in_df(df, regressors_for_anomalies_dict,
@@ -828,7 +917,7 @@ def save_panel_model_results(
     #                                  → coef_type='trend', aquifer_region='HPA_NE'
     # pattern 2 – region interaction: "Precip_anomaly:aquifer_region[CP_WA]"
     #                                  → coef_type='Precip_anomaly', aquifer_region='CP_WA'
-    # pattern 3 – group interaction : "Precip_anomaly:GW_or_conjunctive[T.0]"
+    # pattern 3 – group interaction : "Precip_anomaly:Water_source[T.0]"
     #                                  → coef_type='Precip_anomaly', interaction_group='0'
     # pattern 4 – base regressor   : "Precip_anomaly"
     #                                  → coef_type='Precip_anomaly'
@@ -866,8 +955,12 @@ def save_panel_model_results(
     )
     coef_df = pd.concat([coef_df, parsed], axis=1)
     
+    # significant of note: p-value < 0.05 → significant; otherwise not significant
+    coef_df['significant'] = coef_df['Pr(>|t|)'] < 0.05
+    
     coef_df = coef_df.rename(columns={coef_col: 'model_term'})
 
+    
     # -------------------------------------------------------------------------
     # save CSV
     # -------------------------------------------------------------------------
@@ -1047,15 +1140,24 @@ def compute_IWU_from_panel_model(
 
     monthly_df = df[[c for c in carry_cols if c in df.columns]].copy()
 
-    agg_cols   = anomaly_cols + [iwu_col] + component_cols + ['IWU_predicted_total']
+    # -------------------------------------------------------------------------
+    # ALL columns should be summed for annual aggregation
+    # Anomaly sums give net annual anomaly — consistent with IWU component sums
+    # Precip anomaly sum → mm/year (intuitive)
+    # Tmean anomaly sum → °C·months/year (consistent, though less intuitive)
+
+    sum_cols = [iwu_col] + component_cols + ['IWU_predicted_total'] + anomaly_cols
+
+    agg_dict = {col: 'sum' for col in sum_cols}
+        
     group_cols = [unit_col, year_col]
     for extra in ['aquifer', 'state']:
         if extra in df.columns:
             group_cols.append(extra)
 
-    annual_df = (df.groupby(group_cols)[agg_cols]
-                 .mean()
-                 .reset_index())
+    annual_df = (monthly_df.groupby(group_cols)
+                   .agg(agg_dict)
+                   .reset_index())
 
     # -------------------------------------------------------------------------
     # save
