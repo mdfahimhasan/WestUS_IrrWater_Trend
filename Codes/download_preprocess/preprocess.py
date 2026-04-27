@@ -1753,7 +1753,6 @@ def run_all_preprocessing(years_list,
                           skip_create_water_source_rasters=False,
                           skip_merge_ORNl_Dayflow_annual_data=False,
                           skip_build_processed_huc8=False,
-                          skip_gs_precip_fraction_processing=False,
                           skip_develop_P_PET_correlation_dataset=False,
                           ):
     """
@@ -1889,11 +1888,6 @@ def run_all_preprocessing(years_list,
     years=list(range(1986, 2024)),
     skip_processing=skip_build_processed_huc8)
     
-    # develop annual rasters of growing season precip fraction (Apr-Oct / Annual) for 1986-2023
-    calculate_growing_season_precip_fraction(years_to_consider=list(range(1986, 2024)), 
-                                             monthly_precip_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
-                                             output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/growing_season_fraction',
-                                             skip_processing=skip_gs_precip_fraction_processing)
     
     # develop a static raster of pixel-wise Pearson correlation between monthly precip and PET anomalies across 1986-2023
     develop_P_PET_correlation_dataset(years_to_consider=list(range(1986, 2024)),
