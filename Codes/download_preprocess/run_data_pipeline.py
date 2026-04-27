@@ -89,7 +89,8 @@ if __name__ == '__main__':
         'gee_data_list': [
                           'PRISM_Precip',
                           'PRISM_Tmean',
-                          'Peff_usda_scs'
+                          'Peff_usda_scs',
+                          'GRIDMET_RET'
                           ],
 
         'openET_data_list': [
@@ -153,7 +154,8 @@ if __name__ == '__main__':
         'skip_calculate_growing_season_IWU': True,         ###########################################
         'skip_create_water_source_rasters': True,          ###########################################
         'skip_merge_ORNl_Dayflow_annual_data': True,       ###########################################
-        'skip_build_processed_huc8': True                  ###########################################
+        'skip_build_processed_huc8': True,                 ###########################################
+        'skip_develop_P_PET_correlation_dataset': True,    ###########################################
     }
 
     run_all_preprocessing(
@@ -174,4 +176,7 @@ if __name__ == '__main__':
         skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'],
         skip_create_water_source_rasters=data_preprocessing_bools['skip_create_water_source_rasters'],
         skip_merge_ORNl_Dayflow_annual_data=data_preprocessing_bools['skip_merge_ORNl_Dayflow_annual_data'],
-        skip_build_processed_huc8=data_preprocessing_bools['skip_build_processed_huc8'])
+        skip_build_processed_huc8=data_preprocessing_bools['skip_build_processed_huc8'],
+        skip_develop_P_PET_correlation_dataset=data_preprocessing_bools['skip_develop_P_PET_correlation_dataset'])
+
+    
