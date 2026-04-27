@@ -588,7 +588,7 @@ class GEE_download:
             raise
 
     @staticmethod
-    def __save_raster_from_arr_coords(download_bounds: np.ndarray or list,
+    def __save_raster_from_arr_coords(download_bounds: np.ndarray | list,
                                       arr: np.ndarray,
                                       download_dir: str,
                                       data_name: str,
