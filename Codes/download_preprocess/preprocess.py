@@ -3,6 +3,7 @@
 # Colorado State university
 # Fahim.Hasan@colostate.edu
 
+import ast
 import os
 import re
 import sys
@@ -31,6 +32,7 @@ no_data_value = -9999
 model_res = 0.01976293625031605786  # in deg, ~2 km
 WestUS_shape = PROJECT_ROOT / 'Data_main/ref_shapes/WestUS.shp'
 WestUS_raster = PROJECT_ROOT / 'Data_main/ref_rasters/Western_US_refraster_2km.tif'
+
 
 # configure logging
 logging.basicConfig(
@@ -1585,6 +1587,154 @@ def build_processed_huc8(huc8_shp, states_shp, aquifer_shp, irr_cropland_datadir
     print('\nProcessed HUC8 shapefile saved to ->', output_shp)
 
 
+def develop_P_PET_correlation_dataset(years_to_consider, monthly_precip_dir, monthly_pet_dir,
+                                      output_dir, skip_processing=False):
+    """
+    Develop PET and P correlation dataset (static) for the Western US.
+
+    :param years_to_consider: List of years to consider. 
+                              Only months from these years will be included 
+                              in the correlation calculation.
+    :param monthly_precip_dir: Filepath of monthly precip directory.
+    :param monthly_pet_dir: Filepath of monthly pet directory.
+    :param output_dir: Filepath of output directory.
+    :param skip_processing: Set to True to skip creating this dataset.
+
+    :return: None
+    """
+    if skip_processing:
+        return None
+
+    print('creating P-PET correlation dataset...')
+
+    makedirs([output_dir])
+
+    # accumulating precip and pet data
+    monthly_precip_dir = Path(monthly_precip_dir)
+    monthly_pet_dir = Path(monthly_pet_dir)
+    
+    # Sort both lists by filename to ensure temporal alignment
+    monthly_precip_data_list = sorted(
+        list(monthly_precip_dir.glob('*.tif')),
+        key=lambda x: x.name  # assumes filenames sort chronologically
+    )
+    monthly_pet_data_list = sorted(
+        list(monthly_pet_dir.glob('*.tif')),
+        key=lambda x: x.name
+    )
+    
+    monthly_precip_data_list = [f for f in monthly_precip_data_list if any(str(year) in f.name for year in years_to_consider)]
+    monthly_pet_data_list = [f for f in monthly_pet_data_list if any(str(year) in f.name for year in years_to_consider)]
+    
+    # Verify count match
+    assert len(monthly_precip_data_list) == len(monthly_pet_data_list), \
+        f"File count mismatch! Precip: {len(monthly_precip_data_list)}, PET: {len(monthly_pet_data_list)}"
+
+    # Verify temporal alignment of pairs
+    print('Verifying temporal alignment...')
+    for p, pet in zip(monthly_precip_data_list, monthly_pet_data_list):
+        print(f'  P: {p.name} | PET: {pet.name}')
+    
+    # reading datasets as arrays
+    monthly_precip_arr_list = [read_raster_arr_object(i, get_file=False) for i in monthly_precip_data_list]
+    monthly_pet_arr_list = [read_raster_arr_object(i, get_file=False) for i in monthly_pet_data_list]
+
+    # stacking monthly datasets into a list
+    precip_stack = np.stack(monthly_precip_arr_list,
+                            axis=0)  # shape becomes - n_months, n_lat (height), n_lon(width)
+    pet_stack = np.stack(monthly_pet_arr_list, axis=0)  # shape becomes - n_months, n_lat (height), n_lon(width)
+
+    # replacing nodata with nan so nanmean/nansum ignore them correctly
+    precip_stack = precip_stack.astype(float)
+    pet_stack = pet_stack.astype(float)
+    precip_stack[precip_stack == no_data_value] = np.nan
+    pet_stack[pet_stack == no_data_value] = np.nan
+
+    # Calculating mean along the time axis (i.e., across months) for each pixel
+    precip_mean = np.nanmean(precip_stack, axis=0)
+    pet_mean = np.nanmean(pet_stack, axis=0)
+
+    # estimating precip and pet anomalies
+    precip_anomalies = precip_stack - precip_mean
+    pet_anomalies = pet_stack - pet_mean
+
+    # getting numerator (covariance) for each pixel across time
+    numerator = np.nansum(precip_anomalies * pet_anomalies, axis=0)
+
+    # getting denominator (sum of squares for both variables (this measures the total variation for each))
+    sum_of_squares_precip = np.sqrt(np.nansum(precip_anomalies ** 2, axis=0))
+    sum_of_squares_pet = np.sqrt(np.nansum(pet_anomalies ** 2, axis=0))
+    denominator = sum_of_squares_precip * sum_of_squares_pet
+
+    # calculating Pearson correlation for each pixel
+    with np.errstate(divide='ignore', invalid='ignore'):
+        correlation_arr = numerator / denominator
+
+    output_raster = os.path.join(output_dir, 'PET_P_corr.tif')
+    _, ref_file = read_raster_arr_object(monthly_precip_data_list[0])
+    write_array_to_raster(correlation_arr, ref_file, ref_file.transform, output_raster)
+
+
+def calculate_growing_season_precip_fraction(years_to_consider, monthly_precip_dir,
+                                             output_dir, skip_processing=False):
+    """
+    Calculate the fraction (%) of April–October precipitation out of annual precipitation
+    for each pixel, saved as one raster per year.
+
+    :param years_to_consider: List of years to process.
+    :param monthly_precip_dir: Filepath of monthly precip directory.
+    :param output_dir: Filepath of output directory.
+    :param skip_processing: Set to True to skip this step.
+
+    :return: None
+    """
+    if skip_processing:
+        return None
+
+    print('calculating growing season precip fraction (Apr-Oct / Annual)...')
+
+    makedirs([output_dir])
+
+    monthly_precip_dir = Path(monthly_precip_dir)
+    growing_season_months = list(range(4, 11))  # April (4) to October (10)
+
+    for year in years_to_consider:
+        # collect all 12 months for this year
+        annual_files = list(monthly_precip_dir.glob(f'*{year}*.tif'))
+
+        if len(annual_files) == 0:
+            logger.warning(f'No monthly precip files found for {year}, skipping.')
+            continue
+
+        # growing season months only
+        gs_files = [f for f in annual_files
+                    if int(f.name.split('.tif')[0].split('_')[-1]) in growing_season_months]
+
+        annual_stack = np.stack(
+            [read_raster_arr_object(f, get_file=False).astype(float) for f in annual_files], axis=0
+        )
+        gs_stack = np.stack(
+            [read_raster_arr_object(f, get_file=False).astype(float) for f in gs_files], axis=0
+        )
+
+        annual_stack[annual_stack == no_data_value] = np.nan
+        gs_stack[gs_stack == no_data_value] = np.nan
+
+        annual_precip = np.nansum(annual_stack, axis=0)
+        gs_precip = np.nansum(gs_stack, axis=0)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            gs_precip_fraction = np.where(annual_precip > 0,
+                                          (gs_precip / annual_precip) * 100,
+                                          np.nan)
+
+        _, ref_file = read_raster_arr_object(annual_files[0])
+        output_raster = os.path.join(output_dir, f'GS_precip_fraction_{year}.tif')
+        write_array_to_raster(gs_precip_fraction, ref_file, ref_file.transform, output_raster)
+
+        logger.info(f'Growing season precip fraction for {year} saved to {output_raster}')
+
+
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
                           skip_ref_mask_prism_precip=False,
@@ -1602,7 +1752,9 @@ def run_all_preprocessing(years_list,
                           skip_calculate_growing_season_IWU=False,
                           skip_create_water_source_rasters=False,
                           skip_merge_ORNl_Dayflow_annual_data=False,
-                          skip_build_processed_huc8=False
+                          skip_build_processed_huc8=False,
+                          skip_gs_precip_fraction_processing=False,
+                          skip_develop_P_PET_correlation_dataset=False,
                           ):
     """
     Run all data pre-processing steps.
@@ -1737,3 +1889,16 @@ def run_all_preprocessing(years_list,
     years=list(range(1986, 2024)),
     skip_processing=skip_build_processed_huc8)
     
+    # develop annual rasters of growing season precip fraction (Apr-Oct / Annual) for 1986-2023
+    calculate_growing_season_precip_fraction(years_to_consider=list(range(1986, 2024)), 
+                                             monthly_precip_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
+                                             output_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/growing_season_fraction',
+                                             skip_processing=skip_gs_precip_fraction_processing)
+    
+    # develop a static raster of pixel-wise Pearson correlation between monthly precip and PET anomalies across 1986-2023
+    develop_P_PET_correlation_dataset(years_to_consider=list(range(1986, 2024)),
+                                      monthly_precip_dir=PROJECT_ROOT / 'Data_main/rasters/PRISM_Precip/monthly_masked',
+                                      monthly_pet_dir=PROJECT_ROOT / 'Data_main/rasters/GRIDMET_RET/monthly',
+                                      output_dir=PROJECT_ROOT / 'Data_main/rasters/PET_P_correlation',
+                                      skip_processing=skip_develop_P_PET_correlation_dataset)
+
