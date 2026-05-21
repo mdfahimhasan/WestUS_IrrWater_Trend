@@ -13,6 +13,7 @@ from rasterio import features
 from rasterio.mask import mask
 from rasterio.merge import merge
 from rasterio.enums import Resampling
+from rasterstats import zonal_stats
 
 
 # Project root directory (works regardless of cwd)
@@ -787,3 +788,97 @@ def rasterize_shape_to_match(input_shape, ref_raster, burn_value=1, fill_value=0
             )
 
     return mask_arr
+
+
+def get_majority_raster_class_per_region(input_raster, input_shape, region_col='AQ_Region',
+                                          irrigated_cropland_dir=None, nodata=-9999):
+    """
+    For each region polygon in input_shape, extracts the majority (mode) pixel value
+    from input_raster and returns a dict mapping region → majority class.
+
+    When irrigated_cropland_dir is provided, the extraction is done per year using
+    that year's irrigated cropland mask (value=1 where irrigated). The per-year
+    majority class per region is recorded, and the final class is the mode across
+    all years. This avoids non-irrigated desert/mountain pixels from skewing results.
+
+    Dissolves input_shape by region_col first so multi-part polygons for the same
+    region are treated as one unit.
+
+    :param input_raster: Filepath of classified raster (e.g. Water_source_classification.tif).
+    :param input_shape: Filepath of shapefile containing region polygons (must have region_col).
+    :param region_col: Column name identifying each region. Default 'AQ_Region'.
+    :param irrigated_cropland_dir: Optional directory of annual irrigated cropland rasters
+                                   (value=1 where irrigated, nodata elsewhere). When given,
+                                   per-year majority is extracted and the mode across years
+                                   is returned as the final classification.
+    :param nodata: No-data value in the raster. Default -9999.
+
+    :return: dict of {region_name: majority_class_int}
+    """
+    import os, tempfile
+    from scipy import stats as scipy_stats
+
+    gdf = gpd.read_file(input_shape)
+
+    with rio.open(input_raster) as src:
+        raster_crs = src.crs
+        cls_arr_base = src.read(1).astype(np.float32)
+        cls_arr_base[cls_arr_base == nodata] = np.nan
+        raster_meta = src.meta.copy()
+
+    # dissolve to one geometry per region, reproject to match raster
+    dissolved = gdf.dissolve(by=region_col).reset_index()[[region_col, 'geometry']]
+    dissolved = dissolved.to_crs(raster_crs)
+    regions = dissolved[region_col].tolist()
+
+    raster_meta.update(dtype='float32', nodata=nodata)
+
+    def _write_tmp(arr):
+        tmp = tempfile.NamedTemporaryFile(suffix='.tif', delete=False)
+        tmp.close()
+        masked = np.where(np.isnan(arr), nodata, arr).astype(np.float32)
+        with rio.open(tmp.name, 'w', **raster_meta) as dst:
+            dst.write(masked, 1)
+        return tmp.name
+
+    if irrigated_cropland_dir is None:
+        # no irrigated mask — use full raster
+        tmp_path = _write_tmp(cls_arr_base)
+        stats = zonal_stats(dissolved, tmp_path, stats=['majority'], nodata=nodata)
+        os.unlink(tmp_path)
+        ws_map = {}
+        for row, stat in zip(dissolved.itertuples(), stats):
+            maj = stat.get('majority')
+            if maj is not None:
+                ws_map[getattr(row, region_col)] = int(maj)
+        return ws_map
+
+    # per-year extraction: for each year, mask classification to irrigated pixels only
+    irr_files = sorted(Path(irrigated_cropland_dir).glob('*.tif'))
+    per_year_majority = {r: [] for r in regions}  # region → list of per-year majority values
+
+    for irr_file in irr_files:
+        with rio.open(irr_file) as isrc:
+            irr_arr = isrc.read(1).astype(np.float32)
+            irr_arr[irr_arr == isrc.nodata] = np.nan
+
+        # keep classification only where irrigated this year
+        cls_masked = np.where(irr_arr == 1, cls_arr_base, np.nan)
+
+        tmp_path = _write_tmp(cls_masked)
+        stats = zonal_stats(dissolved, tmp_path, stats=['majority'], nodata=nodata)
+        os.unlink(tmp_path)
+
+        for row, stat in zip(dissolved.itertuples(), stats):
+            maj = stat.get('majority')
+            if maj is not None:
+                per_year_majority[getattr(row, region_col)].append(int(maj))
+
+    # final classification: mode of per-year majority values
+    ws_map = {}
+    for region, values in per_year_majority.items():
+        if values:
+            mode_result = scipy_stats.mode(values, keepdims=True)
+            ws_map[region] = int(mode_result.mode[0])
+
+    return ws_map
