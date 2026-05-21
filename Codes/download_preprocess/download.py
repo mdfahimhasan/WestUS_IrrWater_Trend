@@ -151,7 +151,7 @@ class GEE_download:
 
         aggregation_dict = {
             'GRIDMET_Precip': ee.Reducer.mean(),
-            'GRIDMET_RET': ee.Reducer.mean(),
+            'GRIDMET_RET': ee.Reducer.sum(),
             'GRIDMET_Tmax': ee.Reducer.mean(),
             'GRIDMET_maxRH': ee.Reducer.mean(),
             'GRIDMET_minRH': ee.Reducer.mean(),
