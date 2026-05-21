@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --partition=all
-#SBATCH --ntasks=4
+#SBATCH --ntasks=8
 #SBATCH --nodes=1
 #SBATCH --time=1-0
 #SBATCH --mail-type=BEGIN,END,FAIL,TIME_LIMIT
