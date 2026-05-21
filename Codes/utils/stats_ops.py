@@ -3,18 +3,35 @@
 # Colorado State university
 # Fahim.Hasan@colostate.edu
 
+import logging
+import sys
 import numpy as np
 import pandas as pd
-from scipy.stats import ks_2samp
+import pymannkendall as mk
+from pathlib import Path
+
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 
-def calculate_rmse(Y_pred, Y_obsv):
+# Project root directory (works regardless of cwd)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+)
+
+logger = logging.getLogger(__name__)
+
+
+def calculate_rmse( Y_obsv, Y_pred):
     """
     Calculates RMSE value of model prediction vs observed data.
 
-    :param Y_pred: prediction array or panda series object.
     :param Y_obsv: observed array or panda series object.
+    :param Y_pred: prediction array or panda series object.\
 
     :return: RMSE value.
     """
@@ -27,12 +44,12 @@ def calculate_rmse(Y_pred, Y_obsv):
     return rmse_val
 
 
-def calculate_mae(Y_pred, Y_obsv):
+def calculate_mae( Y_obsv, Y_pred):
     """
     Calculates MAE value of model prediction vs observed data.
 
-    :param Y_pred: prediction array or panda series object.
     :param Y_obsv: observed array or panda series object.
+    :param Y_pred: prediction array or panda series object.
 
     :return: MAE value.
     """
@@ -44,12 +61,12 @@ def calculate_mae(Y_pred, Y_obsv):
     return mae_val
 
 
-def calculate_r2(Y_pred, Y_obsv):
+def calculate_r2(Y_obsv, Y_pred):
     """
     Calculates R2 value of model prediction vs observed data.
 
-    :param Y_pred: prediction array or panda series object.
     :param Y_obsv: observed array or panda series object.
+    :param Y_pred: prediction array or panda series object.
 
     :return: R2 value.
     """
@@ -61,12 +78,12 @@ def calculate_r2(Y_pred, Y_obsv):
     return r2_val
 
 
-def calculate_metrics(predictions, targets):
+def calculate_metrics(targets, predictions):
     """
     Calculates regression metrics: RMSE, MAE, R², Normalized RMSE, and Normalized MAE.
 
-    :param predictions: array-like or list. Predicted values.
     :param targets: array-like or list. True target values.
+    :param predictions: array-like or list. Predicted values.
 
     :return: dict. Dictionary containing:
         - 'RMSE': Root Mean Squared Error
@@ -81,11 +98,14 @@ def calculate_metrics(predictions, targets):
 
     rmse = np.sqrt(np.mean((predictions - targets) ** 2))
     mae = np.mean(np.abs(predictions - targets))
-    r2 = 1 - (np.sum((predictions - targets) ** 2) /
-              np.sum((targets - np.mean(targets)) ** 2))
 
-    normalized_rmse = rmse / np.mean(targets)
-    normalized_mae = mae / np.mean(targets)
+    ss_res = np.sum((predictions - targets) ** 2)
+    ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+    r2 = np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
+
+    target_mean = np.mean(targets)
+    normalized_rmse = np.nan if target_mean == 0 else rmse / target_mean
+    normalized_mae  = np.nan if target_mean == 0 else mae  / target_mean
 
     return {'RMSE': rmse,
             'MAE': mae,
@@ -234,58 +254,180 @@ def quantile_mapping(predictions, observed_train):
     return corrected_predictions
 
 
-def ks_test_pairwise(state_dfs_dict, round_digits=3):
+def calc_stdv(data):
+    data = np.asarray(data)
+    stdv = np.std(data, ddof=1)  # Sample standard deviation (ddof=1)
+    
+    return stdv
+
+def calc_cv(data):
+    data = np.asarray(data)
+    mean = np.mean(data)
+    stdv = np.std(data, ddof=1)  # Sample standard deviation (ddof=1)
+    
+    cv = stdv / mean if mean != 0 else np.nan  # Avoid division by zero
+    
+    return cv
+
+
+def calc_stdv_cv_by_group(df, value_col, group_col):
     """
-    Performs pairwise Kolmogorov–Smirnov (K–S) tests between multiple state datasets.
-
-    ------------------------------------------------------------------------------------------------------------------
-    Kolmogorov–Smirnov (K–S) Test Overview
-
-    source: https://www.geeksforgeeks.org/machine-learning/kolmogorov-smirnov-test-ks-test/
-    ------------------------------------------------------------------------------------------------------------------
-    The Kolmogorov–Smirnov (K–S) test is a nonparametric statistical test used to compare two empirical distributions.
-    It quantifies the maximum absolute difference between their empirical cumulative distribution functions (ECDFs).
-    The resulting D-statistic measures how far apart the two distributions are, while the p-value indicates whether
-    this difference is statistically significant. Because the K–S test makes no assumptions about the underlying
-    distribution shape, it is particularly useful for assessing whether two samples originate from the same
-    population. In this function, it is used to evaluate feature distribution similarity across
-    states—for example, comparing Utah’s or California’s climatic and irrigation feature spaces
-    against the model’s training states.
+    Calculate standard deviation and coefficient of variation for each group in a DataFrame.
 
     Parameters
     ----------
-    state_dfs_dict : dict
-        Dictionary where keys are state names and values are DataFrames
-        containing the column specified by `value_col`.
-    round_digits : int, default=3
-        Number of decimal places to round D and p-values.
+    df : DataFrame with columns [group_col, value_col].
+    value_col : Column to calculate stdv and cv for (e.g. 'IWU_Tmean').
+    group_col : Column defining groups (e.g. 'cluster').
 
     Returns
     -------
-    D_mat : pd.DataFrame
-        Matrix of K–S D-statistics.
-    p_mat : pd.DataFrame
-        Matrix of corresponding p-values.
+    DataFrame with one row per group and columns:
+        [group_col, stdv]
     """
+    records = []
+    
+    for group, grp in df.groupby(group_col):
+        values = grp[value_col].dropna().values
+        
+        if len(values) < 2:
+            logger.warning(f'Group {group}: only {len(values)} valid values — skipping stdv and cv calculation.')
+            continue
+        
+        stdv = calc_stdv(values)
+        cv = calc_cv(values)
+        
+        records.append({group_col: group, 'stdv': stdv, 'cv': cv})
 
-    state_names = list(state_dfs_dict.keys())
-    D_mat = pd.DataFrame(index=state_names, columns=state_names)
-    p_mat = pd.DataFrame(index=state_names, columns=state_names)
+    cols = [group_col, 'stdv', 'cv']
+    
+    return pd.DataFrame(records)[cols]
+    
+    
+def mann_kendall_trend(values, alpha=0.05, autocorr_correction=True):
+    """
+    Run Modified Mann-Kendall trend test + Sen's slope on a 1-D array of annual values.
 
-    for s1 in state_names:
-        vals1 = state_dfs_dict[s1].dropna()
-        for s2 in state_names:
-            vals2 = state_dfs_dict[s2].dropna()
+    Uses the Hamed & Rao (1998) modification by default, which corrects for
+    autocorrelation common in climate-driven variables. Falls back to the
+    original MK test if autocorr_correction=False.
 
-            # The D-value is the maximum vertical distance between the two empirical
-            # cumulative distribution functions (ECDFs). It ranges between 0 and 1.
-            # 0 → identical distributions; closer to 1 → very different distributions
-            D, p = ks_2samp(vals1, vals2)
-            D_mat.loc[s1, s2] = round(D, round_digits)
+    Parameters
+    ----------
+    values : array-like
+        Annual time-series values (no NaNs — drop them before calling).
+    alpha : float
+        Significance threshold. Default 0.05.
+    autocorr_correction : bool
+        If True, use modified MK (Hamed & Rao). If False, use original MK.
 
-        #  When n1 and n2 are large, even a small shift in distributions produces a tiny p-value.
-        # So, with pixel-scale datasets, we’ll almost always reject the null hypothesis of “same distribution.”
-        # so, we are ignoring 'p value' for now.
-        # p_mat.loc[s1, s2] = round(p, 8)
+    Returns
+    -------
+    dict with keys:
+        trend       : 'increasing', 'decreasing', or 'no trend'
+        S_slope     : Sen's slope (units/year)
+        intercept   : Sen's intercept
+        p_value     : p-value from MK test
+        significant : bool, True if p_value < alpha
+        tau         : Kendall's tau statistic
+    """
+    values = np.asarray(values, dtype=float)
 
-    return D_mat
+    if autocorr_correction:
+        result = mk.hamed_rao_modification_test(values, alpha=alpha)
+    else:
+        result = mk.original_test(values, alpha=alpha)
+
+    return {
+        'trend':       result.trend,
+        'S_slope':       result.slope,
+        'intercept':   result.intercept,
+        'p_value':     result.p,
+        'significant': result.p < alpha,
+        'tau':         result.Tau,
+    }
+
+# def add_sen_slope_ci(df, value_col, group_col, year_col='year'):
+#     """
+    
+#     A custom function to calculate Sen's slope confidence intervals (2.5th and 97.5th percentiles).
+
+#     """
+#     records = []
+    
+#     for group, sub_df in df.groupby(group_col):
+#         sub_df_sorted = sub_df.sort_values(year_col)
+#         x = sub_df_sorted[value_col].dropna().values
+        
+#         if len(x) < 4:
+#             logger.warning(f'Group {group}: only {len(x)} valid values — skipping MK test.')
+#             continue
+        
+#         # custom Sen's slope function to compute CI
+#         slope = []
+        
+#         for i in range(len(x)):
+#             for j in range(i + 1, len(x)):        
+#                 slope_ij = (x[j] - x[i]) / (j - i)
+#                 slope.append(slope_ij)
+                
+#         slopes = np.sort(slope) # ascending order
+        
+#         lower_ci = np.percentile(slopes, 2.5)  # 2.5th percentile slope
+#         upper_ci = np.percentile(slopes, 97.5)  # 97.5th percentile slope
+        
+#         records.append({
+#             group_col: group,       
+#             'S_slope_lower_ci': lower_ci,
+#             'S_slope_upper_ci': upper_ci
+#         })
+
+#     return pd.DataFrame(records)
+    
+    
+def mann_kendall_trend_by_group(df, value_col, group_col, year_col='year',
+                                alpha=0.05, autocorr_correction=True):
+    """
+    Apply mann_kendall_trend() to each group (e.g. cluster) in a DataFrame.
+
+    Parameters
+    ----------
+    df               : DataFrame with columns [group_col, year_col, value_col].
+    value_col        : Column to test for trend (e.g. 'IWU_Tmean').
+    group_col        : Column defining groups (e.g. 'cluster').
+    year_col         : Year column for sorting. Default 'year'.
+    alpha            : Significance threshold. Default 0.05.
+    autocorr_correction : Passed to mann_kendall_trend(). Default True.
+
+    Returns
+    -------
+    DataFrame with one row per group and columns:
+        [group_col, trend, S_slope, intercept, p_value, significant, tau]
+
+    Example
+    -------
+    results = mann_kendall_trend_by_group(pdf_annual_clustered,
+                                          value_col='IWU_Tmean',
+                                          group_col='cluster')
+    """
+    records = []
+    
+    for group, grp in df.groupby(group_col):
+        grp_sorted = grp.sort_values(year_col)
+        valid = grp_sorted[value_col].dropna().values
+        
+        if len(valid) < 4:
+            logger.warning(f'Group {group}: only {len(valid)} valid values — skipping MK test.')
+            continue
+        
+        result = mann_kendall_trend(valid, alpha=alpha,
+                                    autocorr_correction=autocorr_correction)
+        result[group_col] = group
+        records.append(result)
+    
+    # Merge the results
+    results_df = pd.DataFrame(records)
+
+    cols = [group_col, 'trend', 'S_slope', 'intercept', 'p_value', 'significant', 'tau']
+
+    return results_df[cols]
