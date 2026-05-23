@@ -70,7 +70,14 @@ if __name__ == '__main__':
 
     # directories and variables
     download_pipeline_config = {
-        'ee_project': 'ee-fahim',                     ########################################### update this to your GEE project name
+        'ee_project': 'geedownload-430916',                  ##### ***** Authenticate with the appropriate GEE account and set the project name accordingly. *****
+                                                            ##### 'ee-westus-pumping' for fahimhasan107 account (1st project)
+                                                            ##### 'ee-peff-westus' for fahimhasan107 account (2nd project)
+                                                            ##### 'ee-peff-westus-unmasked' for fahimhasan107 account (3rd project)
+                                                            ##### 'ee-fahim' for hasanfahimcsu account (4th project)
+                                                            ##### 'geedownload-430916' for fahimhasan107 account (5th project)
+                                                            
+                                                            
         'download_dir': PROJECT_ROOT / 'Data_main/rasters',
         'gee_grid_shape_large': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_large.shp',
         'gee_grid_shape_for30m_IrrMapper': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_IrrMapper.shp',
@@ -78,11 +85,11 @@ if __name__ == '__main__':
         'huc8_shp': PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_HUC8.shp',
         'csv_out_dir': PROJECT_ROOT / 'Data_main/rasters/Dayflow/processed',
         'years': [
-                   1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
-                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
-                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
-                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
-                   2018, 2019, 2020, 2021, 2022, 2023, 2024
+                  1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993,
+                  1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
+                  2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                  2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
+                  2018, 2019, 2020, 2021, 2022, 2023, 2024    
                 ],
         'month_range': (1, 12),
 
@@ -94,10 +101,10 @@ if __name__ == '__main__':
                           ],
 
         'openET_data_list': [
-                             'Irrig_crop_OpenET_IrrMapper',
-                             'Irrig_crop_OpenET_LANID',
-                             'Irrigation_Frac_IrrMapper',
-                             'Irrigation_Frac_LANID'
+                             'Irrig_crop_OpenET_Western',
+                            'Irrigation_Frac_Western',
+                             'Irrig_crop_OpenET_Eastern',
+                             'Irrigation_Frac_Eastern'
                             ],
 
         'skip_gee_data_download': True,                 ###########################################
@@ -106,7 +113,7 @@ if __name__ == '__main__':
         
         'skip_globus_steamflow_download': True,         ###########################################
 
-        'use_cpu_while_multidownloading': 5             ###### fixed for Linux. Adjust it to 5 (for a 16 core cpu) in windows
+        'use_cpu_while_multidownloading': 8          ###### This has to be adjusted based on number of cpu cores and GEE quota limits.
     }
 
     run_download_pipeline(ee_project=download_pipeline_config['ee_project'],
@@ -135,8 +142,7 @@ if __name__ == '__main__':
                   1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001,
                   2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
                   2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017,
-                  2018, 2019, 2020, 2021, 2022, 2023,
-                  # 2024       # will add year 2024 in the pipeline once OpenET data for 2024 - month 12 is available
+                  2018, 2019, 2020, 2021, 2022, 2023, 2024       
                 ],
         'skip_process_GrowSeason_data': True,              ###########################################
         'skip_ref_mask_prism_precip': True,                ###########################################
@@ -144,18 +150,17 @@ if __name__ == '__main__':
         'skip_sum_prism_winter_months': True,              ###########################################
         'skip_prism_tmean_processing': True,               ###########################################
         'skip_irr_cropET_data_merge': True,                ###########################################
-        'skip_sum_irrigated_cropET': True,                 ###########################################
         'skip_sum_usda_scs_peff_growing_season': True,     ###########################################
         'skip_sum_usda_scs_peff_water_year': True,         ###########################################
         'skip_merge_irr_fraction_data': True,              ###########################################
         'skip_irr_cropland_classification': True,          ###########################################
         'skip_estimate_irrigated_area': True,              ###########################################
         'skip_calculate_monthly_IWU': True,                ###########################################
-        'skip_calculate_growing_season_IWU': True,         ###########################################
-        'skip_create_water_source_rasters': True,          ###########################################
+        'skip_calculate_IWU_volume': True,                 ###########################################
         'skip_merge_ORNl_Dayflow_annual_data': True,       ###########################################
         'skip_build_processed_huc8': True,                 ###########################################
         'skip_develop_P_PET_correlation_dataset': True,    ###########################################
+        'skip_collect_spei_huc8': True                     ###########################################
     }
 
     run_all_preprocessing(
@@ -166,17 +171,14 @@ if __name__ == '__main__':
         skip_sum_winter_precip=data_preprocessing_bools['skip_sum_prism_winter_months'],
         skip_prism_tmean_processing=data_preprocessing_bools['skip_prism_tmean_processing'],
         skip_irr_cropET_data_merge=data_preprocessing_bools['skip_irr_cropET_data_merge'],
-        skip_sum_irrigated_cropET=data_preprocessing_bools['skip_sum_irrigated_cropET'],
         skip_sum_usda_scs_peff_growing_season=data_preprocessing_bools['skip_sum_usda_scs_peff_growing_season'],
         skip_sum_usda_scs_peff_water_year=data_preprocessing_bools['skip_sum_usda_scs_peff_water_year'],
         skip_merge_irr_fraction_data=data_preprocessing_bools['skip_merge_irr_fraction_data'],
         skip_irr_cropland_classification=data_preprocessing_bools['skip_irr_cropland_classification'],
         skip_estimate_irrigated_area=data_preprocessing_bools['skip_estimate_irrigated_area'],
         skip_calculate_monthly_IWU=data_preprocessing_bools['skip_calculate_monthly_IWU'],
-        skip_calculate_growing_season_IWU=data_preprocessing_bools['skip_calculate_growing_season_IWU'],
-        skip_create_water_source_rasters=data_preprocessing_bools['skip_create_water_source_rasters'],
+        skip_calculate_IWU_volume=data_preprocessing_bools['skip_calculate_IWU_volume'],
         skip_merge_ORNl_Dayflow_annual_data=data_preprocessing_bools['skip_merge_ORNl_Dayflow_annual_data'],
         skip_build_processed_huc8=data_preprocessing_bools['skip_build_processed_huc8'],
-        skip_develop_P_PET_correlation_dataset=data_preprocessing_bools['skip_develop_P_PET_correlation_dataset'])
-
-    
+        skip_develop_P_PET_correlation_dataset=data_preprocessing_bools['skip_develop_P_PET_correlation_dataset'],
+        skip_collect_spei_huc8=data_preprocessing_bools['skip_collect_spei_huc8'])
