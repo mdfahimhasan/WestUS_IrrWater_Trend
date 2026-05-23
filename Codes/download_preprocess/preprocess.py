@@ -11,13 +11,16 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
+import xarray as xr
 import rasterio as rio
 import rioxarray as rxr
 import geopandas as gpd
 from pathlib import Path
 from rasterio.mask import mask
 from rasterstats import zonal_stats
+from shapely.geometry import mapping
 from rasterio.warp import reproject, Resampling
+
 
 # Project root directory (works regardless of cwd)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -375,27 +378,32 @@ def dynamic_gs_mean_of_variable(year_list, growing_season_dir, monthly_input_dir
     logger.info('---------------------------------------------------------------')
 
 
-def paste_and_reproject(src_raster_path, ref_raster_path, nodata):
+def paste_and_reproject(src_raster_arr_path, ref_raster_path, nodata, 
+                        src_transform=None, src_crs=None):
     """
     Reproject a source raster (small extent, possibly different CRS/resolution)
     into the reference raster grid.
     Returns a full-size array aligned to reference raster.
     """
 
-    # opening the reference raster file and creating an empty array using its shape
     ref_profile = rio.open(ref_raster_path)
     out_arr = np.full((ref_profile.height, ref_profile.width), nodata, dtype=np.float32)
 
-    # read the smaller array (src_raster_path)
-    src_profile = rio.open(src_raster_path)
-    src_arr = src_profile.read(1)
+    if isinstance(src_raster_arr_path, (str, Path)):
+        src_profile = rio.open(src_raster_arr_path)
+        src_arr = src_profile.read(1)
+        src_transform = src_profile.transform
+        src_crs = src_profile.crs
+    else:
+        src_arr = src_raster_arr_path
+        if src_transform is None or src_crs is None:
+            raise ValueError("src_transform and src_crs must be provided when passing a numpy array.")
 
-    # reproject the src array to the crs and pixel size of the reference raster
     reproject(
         source=src_arr,
         destination=out_arr,
-        src_transform=src_profile.transform,
-        src_crs=src_profile.crs,
+        src_transform=src_transform,
+        src_crs=src_crs,
         dst_transform=ref_profile.transform,
         dst_crs=ref_profile.crs,
         resampling=Resampling.nearest,
@@ -405,142 +413,133 @@ def paste_and_reproject(src_raster_path, ref_raster_path, nodata):
     return out_arr, ref_profile
 
 
-def merge_GEE_data_patches_IrrMapper_LANID_extents(year_with_full_extent, input_dir_irrmapper,
-                                                   input_dir_lanid, merged_output_dir,
-                                                   merge_keyword, year_with_partial_extent=None,
-                                                   monthly_data=True, ref_raster=WestUS_raster,
-                                                   skip_processing=False):
+def process_OpenET_GEE_data_patches(year_to_process, input_dir_western,
+                                    input_dir_eastern,
+                                    output_dir,
+                                    merge_keyword,
+                                    months=None,
+                                    monthly_data=False,
+                                    eastern_shp=PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
+                                    skip_processing=False):
     """
-    Merge/mosaic downloaded GEE data for IrrMapper and LANID extent.
+    Process and merge OpenET GEE raster data patches for the western US.
 
-    :param year_with_full_extent: Tuple/list of years for which data will be processed. This list should be
-                                  used to process datasets for which data is available for entire Western US extent.
+    For years 1997–2024, the western patch covers entire Western US, later  and is clipped/resampled
+    to the study domain. For years 1986–1996, both western and eastern patches are
+    available; the eastern patch is masked to its shapefile boundary, reprojected
+    to the reference grid, and merged with the western patch (eastern takes priority
+    where both overlap).
 
-    :param input_dir_irrmapper: Input directory filepath of datasets at IrrMapper extent.
-    :param input_dir_lanid: Input directory filepath of datasets at LANID extent.
-    :param merged_output_dir: Output directory filepath to save merged data.
-    :param merge_keyword: Keyword to use while merging. Foe example: 'Rainfed_Frac', 'Irrigated_crop_OpenET', etc.
-    :param year_with_partial_extent: Tuple/list of years for which partial data is available for the Western US extent.
-                                Default is None.
-    :param monthly_data: Boolean. If False will look/search for yearly data patches. Default set to True to look for
-                         monthly datasets.
-    :param ref_raster: Reference raster to use in merging. Default set to Western US reference raster.
-    :param skip_processing: Set True to skip merging IrrMapper and LANID extent data patches.
-
-    :return: None.
+    :param year_to_process: list of years to process.
+    :param input_dir_western: directory containing western-domain GEE raster files.
+    :param input_dir_eastern: directory containing eastern-domain GEE raster files
+                              (only used for years 1986–1996).
+    :param output_dir: directory where processed/merged output rasters are saved.
+    :param merge_keyword: prefix string used to name output files
+                          (e.g. 'OpenET_IWU').
+    :param months: list of month numbers (1–12) required when monthly_data=True.
+    :param monthly_data: if True, process one raster per month per year;
+                         if False, process one raster per year.
+    :param eastern_shp: path to shapefile defining the eastern patch boundary
+                        (used to mask the eastern raster for 1986–1996).
+    :param skip_processing: if True, return immediately without processing.
+    :return: None
     """
-    if not skip_processing:
-        input_dir_irrmapper = Path(input_dir_irrmapper)
-        input_dir_lanid = Path(input_dir_lanid)
-        merged_output_dir = Path(merged_output_dir)
-        merged_output_dir.mkdir(parents=True, exist_ok=True)
+    if skip_processing:
+        return
 
-        ################################################################################################################
-        # # processing block for monthly data like ET
-        if monthly_data:  # for datasets that are monthly
-            month_list = list(range(1, 13))
+    input_dir_western = Path(input_dir_western)
+    input_dir_eastern = Path(input_dir_eastern)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-            # processing block for data that has Western US-scale coverage
-            if year_with_full_extent is not None:
-                for year in year_with_full_extent:
-                    for month in month_list:
-                        search_by = f'*{year}_{month}_*.tif'
+    if monthly_data and months is None: 
+        raise ValueError("If 'monthly_data' is True, 'months' must be provided as a list of month numbers (1-12).")
 
-                        # making input raster list by joining rasters of irrmapper extent and rasters of lanid extent
-                        irrmapper_raster_list = list(input_dir_irrmapper.glob(search_by))
-                        lanid_raster_list = list(input_dir_lanid.glob(search_by))
-                        irrmapper_raster_list.extend(lanid_raster_list)
-
-                        total_raster_list = irrmapper_raster_list
-
-                        if len(total_raster_list) > 0:  # to only merge for years_list and months when data is available
-                            merged_raster_name = f'{merge_keyword}_{year}_{month}.tif'
-                            mosaic_raster_list(input_raster_list=total_raster_list, output_dir=merged_output_dir,
-                                               raster_name=merged_raster_name, ref_raster=ref_raster, dtype=None,
-                                               resampling_method='nearest', mosaicking_method='first',
-                                               resolution=model_res, nodata=no_data_value)
-
-                            logger.info(f'{merge_keyword} data merged for year {year}, month {month}')
-
-            # processing block for data that has partial coverage over Western US
-            if year_with_partial_extent is not None:
-                for year in year_with_partial_extent:
-                    for month in month_list:
-                        search_by = f'*{year}_{month}_*.tif'
-
-                        ref_arr, ref_file = read_raster_arr_object(ref_raster)
-
-                        # Opening each data and pasting it on ref raster.
-                        # This approach is followed because we want to create a WesternUS-wide raster even if
-                        # there is no irrigated cropland data for LANID and AIM-HPA after 2020 for midwest and
-                        # CONUS-wide
-                        irrmapper_raster_list = list(input_dir_irrmapper.glob(search_by))
-
-                        for irr_data in irrmapper_raster_list:
-                            temp_arr, _ = paste_and_reproject(src_raster_path=irr_data,
-                                                              ref_raster_path=ref_raster,
-                                                              nodata=no_data_value)
-
-                            ref_arr = np.where(temp_arr != -9999, temp_arr, ref_arr)
-
-                        ref_arr[ref_arr == 0] = no_data_value
-                        output_raster = merged_output_dir / f'{merge_keyword}_{year}_{month}.tif'
-                        write_array_to_raster(ref_arr, ref_file, ref_file.transform, output_raster)
-
-                        logger.info(f'{merge_keyword} data merged for year {year}, month {month}')
-
-        ################################################################################################################
-        # # processing block for datasets that are yearly like land use
+    for yr in year_to_process:
+        if monthly_data:
+            if isinstance(months, tuple):
+                raise ValueError("The 'months' parameter should be a list of month numbers (1-12), not a tuple.")           
+                                
+            iterations = months
+            
         else:
+            iterations = [None]
 
-            # processing block for data that has Western US-scale coverage
-            if year_with_full_extent is not None:
-                for year in year_with_full_extent:
-                    search_by = f'*{year}_*.tif'
+        if yr in range(1997, 2025):
+            for month in iterations:
+                pattern = f'*{yr}_{month}.*tif' if monthly_data else f'*{yr}*.tif'
+                
+                data_file = list(input_dir_western.glob(pattern))[0]
 
-                    # making input raster list by joining rasters of irrmapper extent and rasters of lanid extent
-                    irrmapper_raster_list = list(input_dir_irrmapper.glob(search_by))
-                    lanid_raster_list = list(input_dir_lanid.glob(search_by))
-                    irrmapper_raster_list.extend(lanid_raster_list)
+                raster_name = f'{merge_keyword}_{yr}_{month}.tif' if monthly_data else f'{merge_keyword}_{yr}.tif'
+               
+                clip_resample_reproject_raster(
+                    input_raster=data_file,
+                    input_shape=WestUS_shape,
+                    output_raster_dir=output_dir,
+                    keyword='',
+                    resolution=model_res,
+                    raster_name=raster_name,
+                    clip_and_resample=True,
+                    use_ref_width_height=False,
+                    ref_raster=WestUS_raster,
+                )
 
-                    total_raster_list = irrmapper_raster_list
+        elif yr in range(1986, 1997):
+            for month in iterations:
+                pattern = f'*{yr}_{month}.*tif' if monthly_data else f'*{yr}*.tif'
+                
+                western_data = list(input_dir_western.glob(pattern))[0]
+                eastern_data = list(input_dir_eastern.glob(pattern))[0]
 
-                    if len(total_raster_list) > 0:  # to only merge for years_list and months when data is available
-                        merged_raster_name = f'{merge_keyword}_{year}.tif'
-                        mosaic_raster_list(input_raster_list=total_raster_list, output_dir=merged_output_dir,
-                                           raster_name=merged_raster_name, ref_raster=ref_raster, dtype=None,
-                                           resampling_method='nearest', mosaicking_method='first',
-                                           resolution=model_res, nodata=no_data_value)
+                eastern_shp_gdf = gpd.read_file(eastern_shp)
+                eastern_shp_gdf = eastern_shp_gdf.to_crs(rio.open(eastern_data).crs)  
+                eastern_geom = [geom.__geo_interface__ for geom in eastern_shp_gdf.geometry]
+                
+                # masking the eastern raster with the eastern shapefile 
+                # to get the eastern patch of the data. 
+                # Not considering Colorado, New Mexico for this part
+                eastern_arr, eastern_file = read_raster_arr_object(eastern_data)
 
-                        logger.info(f'{merge_keyword} data merged for year {year}')
+                eastern_arr, eastern_transform = mask(
+                    dataset=eastern_file,
+                    shapes=eastern_geom, 
+                    crop=True, filled=False, nodata=no_data_value
+                )
 
-            # processing block for data that has partial coverage over Western US
-            if year_with_partial_extent is not None:
-                for year in year_with_partial_extent:
-                    search_by = f'*{year}_*.tif'
+                ref_arr_east_full, _ = paste_and_reproject(
+                    src_raster_arr_path=eastern_arr,
+                    ref_raster_path=WestUS_raster,
+                    nodata=no_data_value,
+                    src_transform=eastern_transform,
+                    src_crs=eastern_file.crs)
+                
+                
+                # loading the Western patch of the data
+                western_arr, western_file = read_raster_arr_object(western_data)
+                
+                ref_arr_west_full, _ = paste_and_reproject(
+                    src_raster_arr_path=western_arr,
+                    ref_raster_path=WestUS_raster,
+                    nodata=no_data_value,
+                    src_transform=western_file.transform,
+                    src_crs=western_file.crs)
 
-                    ref_arr, ref_file = read_raster_arr_object(ref_raster)
+                # Merging the eastern and western patches together
+                merged_arr = np.where(ref_arr_east_full != no_data_value, ref_arr_east_full, ref_arr_west_full)
+                
+                ref_arr, ref_file = read_raster_arr_object(WestUS_raster)
+                merged_arr = np.where((merged_arr > 0) & (ref_arr == 0), merged_arr, no_data_value)
 
-                    # Opening each data and pasting it on ref raster.
-                    # This approach is followed because we want to create a WesternUS-wide raster even if
-                    # there is no irrigated cropland data for LANID and AIM-HPA after 2020 for midwest and CONUS-wide
-                    irrmapper_raster_list = list(input_dir_irrmapper.glob(search_by))
+                suffix = f'{yr}_{month}' if monthly_data else str(yr)
+                output_path = output_dir / f'{merge_keyword}_{suffix}.tif'
+                                
+                write_array_to_raster(raster_arr=merged_arr, raster_file=ref_file, 
+                                      transform=ref_file.transform, 
+                                      output_path=output_path, nodata=no_data_value)
 
-                    for irr_data in irrmapper_raster_list:
-                        temp_arr, _ = paste_and_reproject(src_raster_path=irr_data,
-                                                          ref_raster_path=ref_raster,
-                                                          nodata=no_data_value)
-
-                        ref_arr = np.where(temp_arr != -9999, temp_arr, ref_arr)
-
-                    ref_arr[ref_arr == 0] = no_data_value
-                    output_raster = merged_output_dir / f'{merge_keyword}_{year}.tif'
-                    write_array_to_raster(ref_arr, ref_file, ref_file.transform, output_raster)
-
-                    logger.info(f'{merge_keyword} data merged for year {year}')
-    else:
-        pass
-
+    print(f'All OpenET GEE data patches processed and merged successfully for {merge_keyword}.\n')
 
 def classify_irrigated_cropland(years, irrigated_fraction_dir,
                                 irrigated_cropland_output_dir,
@@ -553,18 +552,9 @@ def classify_irrigated_cropland(years, irrigated_fraction_dir,
     reflecting a systematic difference in detection sensitivity between the underlying
     datasets:
 
-        - 1997 and later  : LANID + AIM-HPA combined fraction → threshold = 0.13 (13%)
+        - 1997 and later  : LANID + AIM-HPA combined fraction → threshold = 0.1 (10%)
         - Pre-1997        : AIM-HPA only fraction             → threshold = 0.08 (8%)
-        - basin & range region: All years                        → threshold = 0.01 (1%)
-
-    ########################
-    # THRESHOLD DECISION NOTES
-
-    ** Why 13% for >=1997
-    The irrigated fraction for 1997-2020 is derived from a combination of LANID and
-    AIM-HPA datasets (see download_Irr_frac_from_LANID_yearly). The 13% threshold
-    was determined from prior calibration against reference irrigated cropland data
-    for the LANID+AIM-HPA combined product.
+        - basin & range region: All years                     → threshold = 0.1 (10%)
 
     ** Why 8% for pre-1997
     ----------------------
@@ -575,7 +565,7 @@ def classify_irrigated_cropland(years, irrigated_fraction_dir,
 
         1. The gap between AIM-HPA-only and LANID+AIM-HPA is largest in the early
            overlap years (1997-2001), which are temporally closest to the pre-1997
-           period. At threshold=0.13, the combined product classified ~10-15% more
+           period. At threshold=0.1, the combined product classified ~10-15% more
            pixels as irrigated than AIM-HPA alone in these years.
         2. Threshold calibration curves (% pixels irrigated vs threshold) consistently
            showed that an AIM-HPA threshold of ~0.08-0.10 produces irrigated area
@@ -590,20 +580,12 @@ def classify_irrigated_cropland(years, irrigated_fraction_dir,
     Using 0.08 for pre-1997 minimises the artificial discontinuity in classified
     irrigated area at the 1996/1997 boundary introduced by the dataset transition.
 
-    ** Basin & Range exception:
-    A lower threshold of 0.01 is applied uniformly across all years within the Basin
-    and Range region (defined by basin_range_shp), regardless of the year-based
-    threshold above. This region has distinct irrigation patterns that require a
-    separate classification rule.
-
     ########################
 
     :param years: List of years to process data for.
     :param irrigated_fraction_dir: Input directory path for irrigated fraction data.
     :param irrigated_cropland_output_dir: Output directory path for classified irrigated cropland data.
-    :param basin_range_shp: Basin and range-fill region shapefile. Pixels within this
-                            region are classified at a lower threshold (>0.01) regardless
-                            of year.
+    :param basin_range_shp: Basin and range-fill region shapefile.
     :param skip_processing: Set True to skip classifying irrigated and rainfed cropland data.
 
     :return: None
@@ -629,13 +611,13 @@ def classify_irrigated_cropland(years, irrigated_fraction_dir,
         # empty array to store cropland classification
         irrigated_cropland = np.full_like(irrig_arr, -9999, dtype=np.int32)
 
-        # Basin & Range pixels classified at lower threshold (0.01) across all years
-        irrigated_cropland = np.where((basin_range_mask == 1) & (irrig_arr > 0.01), 1,
+        # Basin & Range classification
+        irrigated_cropland = np.where((basin_range_mask == 1) & (irrig_arr > 0.1), 1,
                                         irrigated_cropland)
 
         if year >= 1997:
             # LANID+AIM-HPA combined product — standard 13% threshold
-            irrigated_cropland = np.where((basin_range_mask == 0) & (irrig_arr > 0.13), 1,
+            irrigated_cropland = np.where((basin_range_mask == 0) & (irrig_arr > 0.1), 1,
                                             irrigated_cropland)
         else:
             # AIM-HPA only — reduced 8% threshold to compensate for right-skewed
@@ -1093,8 +1075,76 @@ def calculate_irrigated_area_raster(years, irrigated_fraction_dir, irrigated_cro
 
     logger.info(f'Irrigated area ({area_unit}) calculation completed.')
     logger.info('---------------------------------------------------------------')
+
+
+def calculate_irrigated_volume_acre_ft(years, iwu_dir, irrigated_area_dir,
+                                       output_dir, months=range(4, 11),
+                                       skip_processing=False):
+    """
+    Calculate monthly irrigated water volume per pixel in acre-feet.
+
+    Volume (acre-ft) = IWU (mm) x irrigated area (ha) x 10 / 1233.48184
+                       (mm x ha -> m3)   (m3 per acre-ft)
+
+    IWU rasters are monthly (named IWU_{year}_{month}.tif); irrigated area
+    rasters are annual (one per year, constant across months).
+
+    :param years: List/tuple of years to process.
+    :param iwu_dir: Directory of monthly IWU rasters in mm (IWU_{year}_{month}.tif).
+    :param irrigated_area_dir: Directory of annual irrigated area rasters in hectares
+                                (output of calculate_irrigated_area_raster).
+    :param output_dir: Output directory for monthly irrigated volume rasters (acre-ft).
+    :param months: Months to process. Defaults to April-October (4-10).
+    :param skip_processing: Set True to skip this step.
+
+    :return: None.
+    """
+    if skip_processing:
+        return
+
+    M3_PER_ACRE_FT = 1233.48184   # 1 acre-foot in cubic metres
+
+    iwu_dir            = Path(iwu_dir)
+    irrigated_area_dir = Path(irrigated_area_dir)
+    output_dir         = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for year in years:
+        area_matches = list(irrigated_area_dir.glob(f'*{year}*.tif'))
+        if not area_matches:
+            logger.warning(f'Missing irrigated area raster for year={year} — skipping.')
+            continue
+
+        # area raster is annual — load once and reuse across all months
+        area_arr, area_file = read_raster_arr_object(area_matches[0], get_file=True)
+        area_arr = area_arr.astype(np.float32)
+
+        logger.info(f': IWU volume saved -> year={year}')
     
-    
+        for month in months:
+            iwu_path = iwu_dir / f'IWU_{year}_{month}.tif'
+            if not iwu_path.exists():
+                logger.warning(f'Missing IWU raster: {iwu_path.name} — skipping.')
+                continue
+
+            iwu_arr, ras_file = read_raster_arr_object(iwu_path, get_file=True)
+            iwu_arr = iwu_arr.astype(np.float32)
+
+            valid = (iwu_arr != no_data_value) & (area_arr != no_data_value) \
+                    & (iwu_arr > 0) & (area_arr > 0)
+
+            vol_arr = np.full_like(iwu_arr, no_data_value, dtype=np.float32)
+            # IWU_mm * area_ha * 10 -> m3; / M3_PER_ACRE_FT -> acre-ft
+            vol_arr[valid] = iwu_arr[valid] * area_arr[valid] * 10 / M3_PER_ACRE_FT
+
+            output_path = output_dir / f'IWU_vol_acre_ft_{year}_{month}.tif'
+            write_array_to_raster(vol_arr, ras_file, ras_file.transform,
+                                  output_path, nodata=no_data_value)
+
+    logger.info('Monthly irrigated volume (acre-ft) calculation completed.')
+    logger.info('---------------------------------------------------------------')
+
+
 def create_spatial_unit_rasters(aquifer_state_shp, raster_config_list,
                                 output_dir, ref_raster=WestUS_raster,
                                 skip_processing=False):
@@ -1537,6 +1587,38 @@ def build_processed_huc8(huc8_shp, states_shp, aquifer_shp, irr_cropland_datadir
     aquifer_region = gpd.read_file(aquifer_shp)
     aquifer_region = aquifer_region.to_crs('EPSG:5070')  # Reproject to projected crs
 
+    # Normalise AQ_Region strings: strip whitespace and enforce known capitalisation.
+    # This guards against case drift (e.g. 'BR_AZ_east' vs 'BR_AZ_East') introduced
+    # by manual edits to the source shapefile.
+    _aq_region_canonical = {r.strip().lower(): r for r in [
+        'BR_AZ_East', 'BR_AZ_West',
+        'BR_NV_Central', 'BR_NV_North', 'BR_NV_West',
+        'BR_UT_North', 'BR_UT_South',
+        'CV_CA_Sacramento', 'CV_CA_SanJoaquin', 'CV_CA_Tulare',
+        'CP_OR', 'CP_WA',
+        'DBA_CO',
+        'HPA_CO', 'HPA_KS_East', 'HPA_KS_West', 'HPA_NE', 'HPA_OK',
+        'HPA_TX_North', 'HPA_TX_South',
+        'RG_CO', 'RG_NM',
+        'SRP_ID_East', 'SRP_ID_West',
+        'UCRB_CO', 'UCRB_UT', 'UCRB_WY',
+        'Will_OR',
+    ]}
+    
+    def _normalise_aq(val):
+        if pd.isna(val):
+            return val
+        key = str(val).strip().lower()
+        canonical = _aq_region_canonical.get(key)
+        
+        if canonical is None:
+            logger.warning(f"Unknown AQ_Region value '{val}' — kept as-is. "
+                           f"Add it to _aq_region_canonical in preprocess.py.")
+       
+        return canonical if canonical is not None else val
+
+    aquifer_region['AQ_Region'] = aquifer_region['AQ_Region'].apply(_normalise_aq)
+
     # Step 1: Intersection to find which aquifer each HUC8 overlaps with (and by how much)
     overlap_2 = gpd.overlay(overlap_state, aquifer_region, how='intersection', keep_geom_type=False)
     overlap_2['overlap_area'] = overlap_2.geometry.area
@@ -1735,6 +1817,79 @@ def calculate_growing_season_precip_fraction(years_to_consider, monthly_precip_d
         logger.info(f'Growing season precip fraction for {year} saved to {output_raster}')
 
 
+def extract_spei_per_huc8(spei_nc_path, huc8_shp_path, output_csv_path,
+                           start_year=1986, end_year=2024,
+                           resample_res=0.018):
+    """
+    Extract mean monthly SPEI values per HUC8 basin and save to CSV.
+
+    :param spei_nc_path:     Path to the SPEI NetCDF file.
+    :param huc8_shp_path:    Path to the HUC8 shapefile.
+    :param output_csv_path:  Path for the output CSV file.
+    :param start_year:       First year to include (inclusive).
+    :param end_year:         Last year to include (inclusive).
+    :param resample_res:     Resampling resolution in degrees (~0.018 deg = ~2 km).
+    :return:                 DataFrame with columns [HUC8, Year, Month, Mean_SPEI].
+    """
+    print('\nExtracting mean monthly SPEI values per HUC8 basin...')
+    print('-----------------------------------------------------------\n')
+    
+    # load and filter by time
+    spei_data = xr.open_dataset(spei_nc_path)
+    spei_data = spei_data.sel(time=slice(str(start_year), str(end_year)))
+
+    # fix CRS — embedded 'crs' variable is mislabeled; actual data is EPSG:4326
+    if 'crs' in spei_data.data_vars:
+        spei_data = spei_data.drop_vars('crs')
+
+    spei_data = spei_data.rio.write_crs('EPSG:4326')
+
+    # reproject HUC8 to EPSG:4326 to match SPEI
+    huc8_gdf = gpd.read_file(huc8_shp_path).to_crs('EPSG:4326')
+
+    # clip SPEI to WestUS extent before resampling to reduce memory
+    spei_clipped = spei_data.rio.clip(huc8_gdf.geometry, huc8_gdf.crs, drop=True)
+
+    # resample to ~2km resolution
+    spei_2km = spei_clipped.rio.reproject(
+        dst_crs='EPSG:4326',
+        resolution=(resample_res, resample_res),
+        resampling=Resampling.bilinear
+    )
+    spei_2km = spei_2km.rio.set_spatial_dims(x_dim='x', y_dim='y')
+
+    # extract mean SPEI per HUC8 per year/month
+    records = []
+
+    for year in range(start_year, end_year + 1):
+        print(f'Processing year {year}...')
+        
+        for mn in range(8, 11):  # August (8) to October (10); we only need representative months for the growing season, not the full year
+            spei_subset = spei_2km.sel(time=f'{year}-{mn:02d}')
+
+            for _, row in huc8_gdf.iterrows():
+                try:
+                    clipped = spei_subset.rio.clip(
+                        [mapping(row.geometry)], huc8_gdf.crs, drop=True
+                    )
+                    mean_val = float(np.nanmean(clipped['spei'].values))
+                except Exception:
+                    mean_val = np.nan
+
+                records.append({
+                    'HUC8': row['HUC8'],
+                    'year': year,
+                    'month': mn,
+                    'mean_SPEI': mean_val
+                })
+
+    print('\nDone.')
+    results_df = pd.DataFrame(records)
+    results_df.to_csv(output_csv_path, index=False)
+    print(f'Saved to {output_csv_path}')
+    return results_df
+
+
 def run_all_preprocessing(years_list,
                           skip_process_GrowSeason_data=False,
                           skip_ref_mask_prism_precip=False,
@@ -1742,18 +1897,17 @@ def run_all_preprocessing(years_list,
                           skip_sum_winter_precip=False,
                           skip_prism_tmean_processing=False,
                           skip_irr_cropET_data_merge=False,
-                          skip_sum_irrigated_cropET=False,
                           skip_sum_usda_scs_peff_growing_season=False,
                           skip_sum_usda_scs_peff_water_year=False,
                           skip_merge_irr_fraction_data=False,
                           skip_irr_cropland_classification=False,
                           skip_estimate_irrigated_area=False,
                           skip_calculate_monthly_IWU=False,
-                          skip_calculate_growing_season_IWU=False,
-                          skip_create_water_source_rasters=False,
+                          skip_calculate_IWU_volume=False,
                           skip_merge_ORNl_Dayflow_annual_data=False,
                           skip_build_processed_huc8=False,
                           skip_develop_P_PET_correlation_dataset=False,
+                          skip_collect_spei_huc8=False
                           ):
     """
     Run all data pre-processing steps.
@@ -1793,23 +1947,15 @@ def run_all_preprocessing(years_list,
                                 mean_keyword='Tmean', skip_processing=skip_prism_tmean_processing)
 
     # Join (merge) irrigated cropET data chunks to Western US extent (1986-2024)
-    merge_GEE_data_patches_IrrMapper_LANID_extents(
-        year_with_full_extent=years_list,       
-        year_with_partial_extent=None,
-        input_dir_irrmapper=PROJECT_ROOT / 'Data_main/rasters/Irrig_crop_OpenET_IrrMapper',
-        input_dir_lanid=PROJECT_ROOT / 'Data_main/rasters/Irrig_crop_OpenET_LANID',
-        merged_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',
-        merge_keyword='Irrigated_cropET', monthly_data=True,
-        ref_raster=WestUS_raster,
-        skip_processing=skip_irr_cropET_data_merge)
-
-    # Sum irrigated crop ET for dynamic growing season
-    dynamic_gs_sum_of_variable(year_list=years_list,
-                               growing_season_dir=PROJECT_ROOT / 'Data_main/rasters/Growing_season',
-                               monthly_input_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',
-                               gs_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/growing_season',
-                               sum_keyword='Irrigated_cropET',
-                               skip_processing=skip_sum_irrigated_cropET)
+    process_OpenET_GEE_data_patches(year_to_process=years_list, 
+                                    merge_keyword='Irrigated_cropET',
+                                    input_dir_western=PROJECT_ROOT / 'Data_main/rasters/Irrig_crop_OpenET_Western/monthly/raw_download',
+                                    input_dir_eastern=PROJECT_ROOT / 'Data_main/rasters/Irrig_crop_OpenET_Eastern/monthly/raw_download',
+                                    months=list(range(1, 13)),
+                                    monthly_data=True,
+                                    output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',
+                                    eastern_shp=PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
+                                    skip_processing=skip_irr_cropET_data_merge)
     
     # Sum effective precipitation for dynamic growing season
     dynamic_gs_sum_of_variable(year_list=years_list,
@@ -1826,15 +1972,13 @@ def run_all_preprocessing(years_list,
                       save_keyword='effective_precip', skip_processing=skip_sum_usda_scs_peff_water_year)
 
     # process irrigated fraction data (1986-2024)
-    merge_GEE_data_patches_IrrMapper_LANID_extents(
-        year_with_full_extent=years_list,
-        year_with_partial_extent=None,
-        input_dir_irrmapper=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_IrrMapper',
-        input_dir_lanid=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_LANID',
-        merged_output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
-        merge_keyword='Irrigated_Frac', monthly_data=False,
-        ref_raster=WestUS_raster,
-        skip_processing=skip_merge_irr_fraction_data)
+    process_OpenET_GEE_data_patches(year_to_process=years_list, 
+                                    merge_keyword='Irrigated_Frac',
+                                    input_dir_western=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_Western/yearly/raw_download',
+                                    input_dir_eastern=PROJECT_ROOT / 'Data_main/rasters/Irrigation_Frac_Eastern/yearly/raw_download',
+                                    output_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropland/Irrigated_Frac',
+                                    eastern_shp=PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_gee_grid_for30m_LANID.shp',
+                                    skip_processing=skip_merge_irr_fraction_data)
 
     # process irrigated cropland data (1986-2024)
     classify_irrigated_cropland(years=years_list,
@@ -1851,26 +1995,21 @@ def run_all_preprocessing(years_list,
                                     area_unit='hectares',
                                     skip_processing=skip_estimate_irrigated_area)
     
-    # calculate monthly IWU
+    # calculate monthly IWU 
     calculate_monthly_IWU(years_list=years_list,
                           irrigated_cropET_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/monthly',
                           peff_monthly_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/monthly',
                           iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
                           skip_processing=skip_calculate_monthly_IWU)
     
-    # calculate growing season IWU
-    estimate_growing_season_IWU(years_list=years_list, 
-                                irrigated_cropET_gs_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_cropET/growing_season',
-                                peff_gs_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/growing_season',
-                                peff_water_year_dir=PROJECT_ROOT / 'Data_main/rasters/Peff_usda_scs/water_year',
-                                iwu_output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU',
-                                skip_processing=skip_calculate_growing_season_IWU)
+    # calcultae monthly irrigated water use columne (unit in acre-ft)
+    calculate_irrigated_volume_acre_ft(years=years_list, 
+                                       iwu_dir=PROJECT_ROOT / 'Data_main/rasters/IWU/IWU_monthly/peff_v1_current',
+                                       irrigated_area_dir=PROJECT_ROOT / 'Data_main/rasters/Irrigated_area',
+                                       output_dir=PROJECT_ROOT / 'Data_main/rasters/IWU_ACFT/monthly',
+                                       months=range(4, 11),
+                                       skip_processing=skip_calculate_IWU_volume)
     
-    # reclassify GW use percentage rasters into binary classification (GW-dominated vs. conjunctive use)
-    reclassify_GW_use_perc_rasters(GW_use_perc_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%',
-                                   westUS_ROI=WestUS_shape,
-                                   output_dir=PROJECT_ROOT / 'Data_main/rasters/USGS_GW_%/Water_source_classification',
-                                   skip_processing=skip_create_water_source_rasters)
     
     # merge ORNL Dayflow annual data into one csv
     merge_ORNl_Dayflow_annual_data(input_annual_csv_dir=PROJECT_ROOT / 'Data_main/rasters/Dayflow/processed', 
@@ -1895,4 +2034,12 @@ def run_all_preprocessing(years_list,
                                       monthly_pet_dir=PROJECT_ROOT / 'Data_main/rasters/GRIDMET_RET/monthly',
                                       output_dir=PROJECT_ROOT / 'Data_main/rasters/PET_P_correlation',
                                       skip_processing=skip_develop_P_PET_correlation_dataset)
+    
+    # process SPEI data and extract mean monthly SPEI per HUC8, saving to CSV
+    if not skip_collect_spei_huc8:
+        extract_spei_per_huc8(
+        spei_nc_path    = PROJECT_ROOT / 'Data_main/rasters/SPEI/raw/spei12.nc',
+        huc8_shp_path   = PROJECT_ROOT / 'Data_main/ref_shapes/WestUS_HUC8_processed.shp',
+        output_csv_path = PROJECT_ROOT / 'Data_main/rasters/SPEI/spei_huc8_monthly.csv',
+        start_year=1986, end_year=2024, resample_res=0.018)
 
