@@ -1633,13 +1633,6 @@ def compute_climate_trend_IWU_fe_model(
             aligned_df['IWU_monthly_q'] = aligned_df[f'Q_Estimate'] * aligned_df[col]
             aligned_df['IWU_monthly_q_2.5%'] = aligned_df['IWU_monthly_q'] - 1.96 * aligned_df['Q_SE'] * aligned_df[col].abs()
             aligned_df['IWU_monthly_q_97.5%'] = aligned_df['IWU_monthly_q'] + 1.96 * aligned_df['Q_SE'] * aligned_df[col].abs()
-
-    # IWU trend calculation
-    baseline_year = aligned_df['year'].min()
-    yrs_since = aligned_df['year'] - baseline_year
-    aligned_df['IWU_trend']      = yrs_since * aligned_df['trend_Estimate']
-    aligned_df['IWU_trend_2.5%']  = aligned_df['IWU_trend'] - 1.96 * aligned_df['trend_SE'] * yrs_since
-    aligned_df['IWU_trend_97.5%'] = aligned_df['IWU_trend'] + 1.96 * aligned_df['trend_SE'] * yrs_since
     
     #######################################################################################################
     # Now, we need to calculate the CIs for the total climate-driven IWU (P + T) considering the covariance 
@@ -1667,9 +1660,6 @@ def compute_climate_trend_IWU_fe_model(
                      'IWU_tmean_2.5%': 'sum',
                      'IWU_tmean_97.5%': 'sum',
                      'IWU_climate': 'sum',
-                     'IWU_trend': 'sum',
-                     'IWU_trend_2.5%': 'sum',
-                     'IWU_trend_97.5%': 'sum',
                      'State': 'first',
                      'AQ_Region': 'first',
                      'Water_source': 'first',
